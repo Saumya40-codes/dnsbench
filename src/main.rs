@@ -1,3 +1,4 @@
+mod benchmark;
 mod cli;
 mod config;
 mod duration;
@@ -16,7 +17,15 @@ fn main() -> ExitCode {
 
     match cli.into_config() {
         Ok(config) => {
+            let domains = match benchmark::load_domains(config.domains_path()) {
+                Ok(domains) => domains,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
             print_config(&config);
+            println!("Loaded domains: {}", domains.len());
             ExitCode::SUCCESS
         }
         Err(error) => {
