@@ -1,22 +1,53 @@
-use std::{error::Error, time::Duration};
-
-use crate::config::{QueryOrder, QueryType, RunConfig, RunConfigInput, StopCondition};
-
+mod cli;
 mod config;
-fn main() -> Result<(), Box<dyn Error>> {
-    let input = RunConfigInput {
-        server: "127.0.0.1:53".parse()?,
-        domains_path: "domains.txt".into(),
-        concurrency: 64,
-        stop_condition: StopCondition::Duration(Duration::from_secs(30)),
-        timeout: Duration::from_secs(2),
-        default_query_type: QueryType::A,
-        order: QueryOrder::Sequential,
+mod duration;
+
+use std::process::ExitCode;
+
+use clap::Parser;
+
+use crate::{
+    cli::Cli,
+    config::{QueryOrder, RunConfig, StopCondition},
+};
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+
+    match cli.into_config() {
+        Ok(config) => {
+            print_config(&config);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn print_config(config: &RunConfig) {
+    println!("Server: {}", config.server());
+    println!("Domains: {}", config.domains_path().display());
+    println!("Concurrency: {}", config.concurrency());
+
+    match config.stop_condition() {
+        StopCondition::Duration(duration) => println!("Duration: {duration:?}"),
+        StopCondition::QueryCount(count) => println!("Queries: {count}"),
+    }
+
+    println!("Timeout: {:?}", config.timeout());
+    let query_type = match config.default_query_type() {
+        config::QueryType::A => "A",
+        config::QueryType::Aaaa => "AAAA",
     };
+    println!("Default query type: {query_type}");
 
-    let config = RunConfig::try_from(input)?;
-
-    println!("{config:#?}");
-
-    Ok(())
+    match config.order() {
+        QueryOrder::Sequential => println!("Order: sequential"),
+        QueryOrder::Shuffled { seed } => {
+            println!("Order: shuffled");
+            println!("Seed: {seed}");
+        }
+    }
 }
