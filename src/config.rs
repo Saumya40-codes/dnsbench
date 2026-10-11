@@ -1,7 +1,4 @@
-use core::error;
 use std::{
-    error::Error,
-    fmt,
     net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
