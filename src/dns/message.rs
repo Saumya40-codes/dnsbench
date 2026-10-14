@@ -1,9 +1,63 @@
+use thiserror::Error;
+
 use crate::config::QueryType;
 
 use super::name::DnsName;
 
+const HEADER_LEN: usize = 12;
+const RESPONSE: u16 = 1 << 15;
+const TRUNCATED: u16 = 1 << 9;
 const RECURSION_DESIRED: u16 = 1 << 8;
+const RCODE_MASK: u16 = 0x000F;
 const INTERNET_CLASS: u16 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rcode {
+    NoError,
+    FormErr,
+    ServFail,
+    NxDomain,
+    NotImp,
+    Refused,
+    Other(u8),
+}
+
+impl Rcode {
+    fn from_flags(flags: u16) -> Self {
+        match flags & RCODE_MASK {
+            0 => Self::NoError,
+            1 => Self::FormErr,
+            2 => Self::ServFail,
+            3 => Self::NxDomain,
+            4 => Self::NotImp,
+            5 => Self::Refused,
+            // masked to 4 bits, so this always fits
+            other => Self::Other(other as u8),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResponseSummary {
+    pub(crate) rcode: Rcode,
+    pub(crate) truncated: bool,
+    pub(crate) answer_count: u16,
+}
+
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseError {
+    #[error("response is too short to answer the query")]
+    TooShort,
+
+    #[error("packet is not a DNS response")]
+    NotAResponse,
+
+    #[error("response ID does not match the query")]
+    IdMismatch,
+
+    #[error("response question does not match the query")]
+    QuestionMismatch,
+}
 
 pub(crate) fn encode_query(
     name: &DnsName,
@@ -44,9 +98,150 @@ pub(crate) fn encode_query(
     output.extend_from_slice(&INTERNET_CLASS.to_be_bytes());
 }
 
+/// Validates `response` against the exact bytes produced by `encode_query`.
+pub(crate) fn validate_response(
+    query: &[u8],
+    response: &[u8],
+) -> Result<ResponseSummary, ResponseError> {
+    debug_assert!(
+        query.len() > HEADER_LEN,
+        "query must come from encode_query"
+    );
+
+    // The echoed question makes a valid response at least as long as the query.
+    if response.len() < query.len() {
+        return Err(ResponseError::TooShort);
+    }
+
+    let flags = read_u16(response, 2);
+
+    if flags & RESPONSE == 0 {
+        return Err(ResponseError::NotAResponse);
+    }
+
+    if response[..2] != query[..2] {
+        return Err(ResponseError::IdMismatch);
+    }
+
+    let question_count = read_u16(response, 4);
+
+    if question_count != 1 || response[HEADER_LEN..query.len()] != query[HEADER_LEN..] {
+        return Err(ResponseError::QuestionMismatch);
+    }
+
+    Ok(ResponseSummary {
+        rcode: Rcode::from_flags(flags),
+        truncated: flags & TRUNCATED != 0,
+        answer_count: read_u16(response, 6),
+    })
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn query_bytes(domain: &str, id: u16, query_type: QueryType) -> Vec<u8> {
+        let mut output = Vec::new();
+        encode_query(
+            &DnsName::parse(domain).unwrap(),
+            id,
+            query_type,
+            true,
+            &mut output,
+        );
+        output
+    }
+
+    fn response_to(query: &[u8], flags: u16, answer_count: u16) -> Vec<u8> {
+        let mut response = query.to_vec();
+        response[2..4].copy_from_slice(&flags.to_be_bytes());
+        response[6..8].copy_from_slice(&answer_count.to_be_bytes());
+        response
+    }
+
+    #[test]
+    fn accepts_matching_response_and_ignores_answer_records() {
+        let query = query_bytes("example.com", 7, QueryType::A);
+        let mut response = response_to(&query, 0x8180, 1); // QR, RD, RA, NOERROR.
+        response.extend_from_slice(&[0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34]);
+
+        assert_eq!(
+            validate_response(&query, &response),
+            Ok(ResponseSummary {
+                rcode: Rcode::NoError,
+                truncated: false,
+                answer_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn reports_rcode_and_truncation() {
+        let query = query_bytes("example.com", 7, QueryType::A);
+
+        for (flags, rcode, truncated) in [
+            (0x8183, Rcode::NxDomain, false),
+            (0x8182, Rcode::ServFail, false),
+            (0x8185, Rcode::Refused, false),
+            (0x838F, Rcode::Other(15), true),
+        ] {
+            let summary = validate_response(&query, &response_to(&query, flags, 0)).unwrap();
+            assert_eq!((summary.rcode, summary.truncated), (rcode, truncated));
+        }
+    }
+
+    #[test]
+    fn rejects_short_packets_and_echoed_queries() {
+        let query = query_bytes("example.com", 7, QueryType::A);
+        let response = response_to(&query, 0x8180, 0);
+
+        for length in [0, 11, query.len() - 1] {
+            assert_eq!(
+                validate_response(&query, &response[..length]),
+                Err(ResponseError::TooShort)
+            );
+        }
+        assert_eq!(
+            validate_response(&query, &query),
+            Err(ResponseError::NotAResponse)
+        );
+    }
+
+    #[test]
+    fn rejects_responses_to_a_different_query() {
+        let query = query_bytes("example.com", 7, QueryType::A);
+
+        for (other, expected) in [
+            (
+                query_bytes("example.com", 8, QueryType::A),
+                ResponseError::IdMismatch,
+            ),
+            (
+                query_bytes("example.org", 7, QueryType::A),
+                ResponseError::QuestionMismatch,
+            ),
+            (
+                query_bytes("example.com", 7, QueryType::Aaaa),
+                ResponseError::QuestionMismatch,
+            ),
+        ] {
+            assert_eq!(
+                validate_response(&query, &response_to(&other, 0x8180, 0)),
+                Err(expected)
+            );
+        }
+
+        let mut no_question = response_to(&query, 0x8180, 0);
+        no_question[4..6].copy_from_slice(&0u16.to_be_bytes());
+        assert_eq!(
+            validate_response(&query, &no_question),
+            Err(ResponseError::QuestionMismatch)
+        );
+    }
 
     #[test]
     fn encodes_a_query_as_exact_wire_bytes() {
