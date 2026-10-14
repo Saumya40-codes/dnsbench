@@ -1,6 +1,7 @@
 mod benchmark;
 mod cli;
 mod config;
+mod dns;
 mod duration;
 
 use std::process::ExitCode;
