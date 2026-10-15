@@ -24,7 +24,7 @@ pub struct Cli {
     #[arg(long, value_name = "ENDPOINT", value_parser = parse_server)]
     server: SocketAddr,
 
-    /// Workload file containing domain names and optional query types
+    /// Workload file containing domain names
     #[arg(long, value_name = "FILE")]
     domains: PathBuf,
 
