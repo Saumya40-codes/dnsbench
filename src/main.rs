@@ -15,24 +15,35 @@ use crate::{
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-
-    match cli.into_config() {
-        Ok(config) => {
-            let domains = match benchmark::load_domains(config.domains_path()) {
-                Ok(domains) => domains,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    return ExitCode::from(2);
-                }
-            };
-            print_config(&config);
-            println!("Loaded domains: {}", domains.len());
-            ExitCode::SUCCESS
-        }
+    let config = match cli.into_config() {
+        Ok(config) => config,
         Err(error) => {
             eprintln!("error: {error}");
-            ExitCode::from(2)
+            return ExitCode::from(2);
         }
+    };
+    let mut domains = match benchmark::load_domains(config.domains_path()) {
+        Ok(domains) => domains,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    print_config(&config);
+    println!("Loaded domains: {}", domains.len());
+    let report = match benchmark::run(&config, &mut domains) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("{report}");
+    match report.stop_reason {
+        benchmark::StopReason::SocketError | benchmark::StopReason::SendDeadline => {
+            ExitCode::FAILURE
+        }
+        _ => ExitCode::SUCCESS,
     }
 }
 

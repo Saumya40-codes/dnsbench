@@ -28,8 +28,8 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     domains: PathBuf,
 
-    /// Maximum number of outstanding queries
-    #[arg(long, default_value_t = 64)]
+    /// Maximum outstanding queries; currently only 1 is supported
+    #[arg(long, default_value_t = 1)]
     concurrency: usize,
 
     /// How long to send queries (integer followed by ns, us, ms, s, m, or h)
@@ -217,7 +217,7 @@ mod tests {
             .unwrap()
             .into_config()
             .unwrap();
-        assert_eq!(config.concurrency().get(), 64);
+        assert_eq!(config.concurrency().get(), 1);
         assert_eq!(config.timeout(), Duration::from_secs(2));
         assert_eq!(config.order(), QueryOrder::Sequential);
         assert_eq!(

@@ -30,6 +30,7 @@ pub(crate) enum QueryOutcome {
 #[derive(Debug)]
 pub(crate) struct QueryReport {
     pub(crate) outcome: QueryOutcome,
+    pub(crate) sent: bool,
     pub(crate) elapsed: Duration,
     pub(crate) rejected: RejectedPackets,
 }
@@ -41,6 +42,10 @@ pub(crate) struct UdpClient {
 }
 
 impl UdpClient {
+    pub(crate) fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
     pub(crate) fn connect(server: SocketAddr) -> io::Result<Self> {
         let local = match server {
             SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
@@ -58,7 +63,7 @@ impl UdpClient {
     }
 
     // One exchange at a time. The caller must avoid IDs still associated with late replies.
-    // Invalid timeouts return Err; socket failures during an exchange stay in the report.
+    // send_by stops new sends; a sent query retains its own response timeout.
     pub(crate) fn query(
         &mut self,
         name: &DnsName,
@@ -66,6 +71,7 @@ impl UdpClient {
         query_type: QueryType,
         recursion_desired: bool,
         timeout: Duration,
+        send_by: Option<Instant>,
     ) -> io::Result<QueryReport> {
         if timeout.is_zero() {
             return Err(io::Error::new(
@@ -90,10 +96,12 @@ impl UdpClient {
             )
         })?;
         let mut rejected = RejectedPackets::default();
-        let outcome = self.exchange_until(deadline, &mut rejected);
+        let mut sent = false;
+        let outcome = self.exchange_until(deadline, send_by, &mut rejected, &mut sent);
 
         Ok(QueryReport {
             outcome,
+            sent,
             elapsed: started.elapsed(),
             rejected,
         })
@@ -102,10 +110,13 @@ impl UdpClient {
     fn exchange_until(
         &mut self,
         deadline: Instant,
+        send_by: Option<Instant>,
         rejected: &mut RejectedPackets,
+        sent: &mut bool,
     ) -> QueryOutcome {
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let send_deadline = send_by.map_or(deadline, |limit| limit.min(deadline));
+            let remaining = send_deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return QueryOutcome::Timeout;
             }
@@ -113,7 +124,10 @@ impl UdpClient {
                 return QueryOutcome::SocketError(error);
             }
             match self.socket.send(&self.query_buffer) {
-                Ok(length) if length == self.query_buffer.len() => break,
+                Ok(length) if length == self.query_buffer.len() => {
+                    *sent = true;
+                    break;
+                }
                 Ok(_) => {
                     return QueryOutcome::SocketError(io::Error::new(
                         ErrorKind::WriteZero,

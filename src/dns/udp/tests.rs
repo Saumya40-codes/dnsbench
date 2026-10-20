@@ -7,6 +7,30 @@ use std::{
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[test]
+fn an_expired_send_window_does_not_send_a_query() {
+    let socket = server();
+    let mut client = UdpClient::connect(socket.local_addr().unwrap()).unwrap();
+    let report = client
+        .query(
+            &DnsName::parse("example.com").unwrap(),
+            1,
+            QueryType::A,
+            true,
+            TEST_TIMEOUT,
+            Some(Instant::now()),
+        )
+        .unwrap();
+    assert!(!report.sent);
+    assert!(matches!(report.outcome, QueryOutcome::Timeout));
+    socket.set_nonblocking(true).unwrap();
+    let mut bytes = [0; MAX_QUERY_LEN];
+    assert_eq!(
+        socket.recv_from(&mut bytes).unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
+}
+
 fn server() -> UdpSocket {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
@@ -53,6 +77,7 @@ fn receives_an_answer_and_measures_the_exchange() {
             QueryType::A,
             true,
             TEST_TIMEOUT,
+            None,
         )
         .unwrap();
     handle.join().unwrap();
@@ -87,6 +112,7 @@ fn reports_dns_errors_and_truncation_as_responses() {
                 QueryType::A,
                 true,
                 TEST_TIMEOUT,
+                None,
             )
             .unwrap();
         handle.join().unwrap();
@@ -116,6 +142,7 @@ fn waits_for_matching_response_after_rejected_packets() {
             QueryType::A,
             true,
             TEST_TIMEOUT,
+            None,
         )
         .unwrap();
     handle.join().unwrap();
@@ -143,6 +170,7 @@ fn times_out_when_server_does_not_reply() {
             QueryType::A,
             true,
             timeout,
+            None,
         )
         .unwrap();
 
@@ -176,6 +204,7 @@ fn unrelated_packets_do_not_restart_the_deadline() {
             QueryType::A,
             true,
             timeout,
+            None,
         )
         .unwrap();
     let _ = stop.send(());
@@ -201,6 +230,7 @@ fn filters_datagrams_from_other_sources() {
             QueryType::A,
             true,
             TEST_TIMEOUT,
+            None,
         )
         .unwrap();
     handle.join().unwrap();
@@ -229,10 +259,10 @@ fn reuses_buffers_and_rejects_late_duplicate_responses() {
     let receive_allocation = client.receive_buffer.as_ptr();
     let name = DnsName::parse("example.com").unwrap();
     let first = client
-        .query(&name, 1, QueryType::A, true, TEST_TIMEOUT)
+        .query(&name, 1, QueryType::A, true, TEST_TIMEOUT, None)
         .unwrap();
     let second = client
-        .query(&name, 2, QueryType::Aaaa, false, TEST_TIMEOUT)
+        .query(&name, 2, QueryType::Aaaa, false, TEST_TIMEOUT, None)
         .unwrap();
     handle.join().unwrap();
 
@@ -261,6 +291,7 @@ fn receives_large_datagrams_without_local_truncation() {
             QueryType::A,
             true,
             TEST_TIMEOUT,
+            None,
         )
         .unwrap();
     handle.join().unwrap();
@@ -282,10 +313,17 @@ fn can_query_again_after_timeout_without_accepting_the_old_reply() {
     let mut client = UdpClient::connect(address).unwrap();
     let name = DnsName::parse("example.com").unwrap();
     let first = client
-        .query(&name, 1, QueryType::A, true, Duration::from_millis(30))
+        .query(
+            &name,
+            1,
+            QueryType::A,
+            true,
+            Duration::from_millis(30),
+            None,
+        )
         .unwrap();
     let second = client
-        .query(&name, 2, QueryType::A, true, TEST_TIMEOUT)
+        .query(&name, 2, QueryType::A, true, TEST_TIMEOUT, None)
         .unwrap();
     handle.join().unwrap();
 
@@ -302,7 +340,7 @@ fn rejects_invalid_timeouts_before_sending() {
     for timeout in [Duration::ZERO, Duration::MAX] {
         assert_eq!(
             client
-                .query(&name, 1, QueryType::A, true, timeout)
+                .query(&name, 1, QueryType::A, true, timeout, None)
                 .unwrap_err()
                 .kind(),
             ErrorKind::InvalidInput
@@ -341,6 +379,7 @@ fn connects_and_queries_an_ipv6_server() {
             QueryType::Aaaa,
             true,
             TEST_TIMEOUT,
+            None,
         )
         .unwrap();
     handle.join().unwrap();
@@ -361,6 +400,7 @@ fn reports_port_unreachable_as_socket_error() {
             QueryType::A,
             true,
             TEST_TIMEOUT,
+            None,
         )
         .unwrap();
     assert!(
