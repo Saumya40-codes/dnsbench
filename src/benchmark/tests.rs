@@ -265,7 +265,7 @@ fn rejects_unsupported_concurrency_empty_workloads_and_clock_overflow() {
     let mut input = RunConfigInput {
         server: "127.0.0.1:53".parse().unwrap(),
         domains_path: "domains.txt".into(),
-        concurrency: 2,
+        concurrency: 65_537,
         stop_condition: StopCondition::Duration(Duration::from_secs(1)),
         timeout: Duration::from_secs(1),
         default_query_type: QueryType::A,

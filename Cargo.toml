@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = { version = "7", default-features = false }
+mio = { version = "1", features = ["os-poll", "net"] }
 thiserror = "2"

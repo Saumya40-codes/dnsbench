@@ -75,16 +75,64 @@ fn cli_rejects_concurrency_it_cannot_execute() {
             "--domains",
         ])
         .arg(&file.0)
-        .args(["--queries", "3", "--concurrency", "2"])
+        .args(["--queries", "3", "--concurrency", "65537"])
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("requires --concurrency 1"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("concurrency must not exceed 65536"));
     socket.set_nonblocking(true).unwrap();
     assert_eq!(
         socket.recv_from(&mut [0; 512]).unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
+}
+
+#[test]
+fn cli_executes_concurrent_queries_and_reports_peak_in_flight() {
+    let file = DomainsFile::new("concurrent");
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let address = socket.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        let mut batch = Vec::new();
+        let mut packet = [0; 512];
+        for _ in 0..3 {
+            let (length, peer) = socket.recv_from(&mut packet).unwrap();
+            let mut response = packet[..length].to_vec();
+            response[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+            batch.push((response, peer));
+        }
+        for (response, peer) in batch.into_iter().rev() {
+            socket.send_to(&response, peer).unwrap();
+        }
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_dns-bench"))
+        .args(["--server", &address.to_string(), "--domains"])
+        .arg(&file.0)
+        .args([
+            "--queries",
+            "3",
+            "--concurrency",
+            "3",
+            "--shuffle",
+            "--seed",
+            "42",
+        ])
+        .output()
+        .unwrap();
+    handle.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Concurrency: 3"));
+    assert!(text.contains("Attempted: 3 | Sent: 3 | Responses: 3"));
+    assert!(text.contains("Peak queries in flight: 3"));
+    assert!(text.contains("Timeouts: 0 | Socket errors: 0"));
 }
 
 #[cfg(target_os = "linux")]
