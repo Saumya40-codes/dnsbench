@@ -17,6 +17,16 @@ use crate::{
 pub(crate) use results::StopReason;
 use results::{RunReport, RunStats};
 
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "Used when the concurrent query loop is implemented"
+)]
+struct PendingQuery {
+    domain_index: usize,
+    sent_at: Instant,
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum BenchmarkError {
     #[error("the sequential engine requires --concurrency 1")]
