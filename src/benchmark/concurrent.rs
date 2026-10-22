@@ -1,11 +1,11 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::{self, ErrorKind},
-    sync::{Arc, atomic::Ordering},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     time::{Duration, Instant},
 };
 
-use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
+use mio::{Events, Interest, Poll, Token, net::UdpSocket};
 
 use crate::{
     config::{RunConfig, StopCondition},
@@ -16,11 +16,10 @@ use crate::{
     },
 };
 
-use super::{BenchmarkError, RunReport, RunStats, StopReason, workers::Shared};
+use super::{BenchmarkError, RunReport, RunStats, StopReason};
 
 const SOCKET: Token = Token(0);
 const BATCH_SIZE: usize = 256;
-const WAKE: Token = Token(1);
 
 #[derive(Debug)]
 struct PendingQuery {
@@ -28,18 +27,18 @@ struct PendingQuery {
     sent_at: Instant,
 }
 
-pub(super) struct Engine<'a> {
+struct Engine<'a> {
     config: &'a RunConfig,
     domains: &'a [DnsName],
-    shared: &'a Shared,
-    concurrency: usize,
     socket: UdpSocket,
     poll: Poll,
     events: Events,
     pending: HashMap<u16, PendingQuery>,
     deadlines: VecDeque<u16>,
+    used_ports: [u64; 1024],
     next_id: u32,
-    domain_index: Option<usize>,
+    domain_index: usize,
+    sent: u64,
     stats: RunStats,
     query_buffer: Vec<u8>,
     receive_buffer: Vec<u8>,
@@ -50,78 +49,60 @@ pub(super) struct Engine<'a> {
     stop_reason: Option<StopReason>,
 }
 
-impl<'a> Engine<'a> {
-    pub(super) fn run(mut self, started: Instant) -> Result<RunReport, BenchmarkError> {
-        self.started = started;
-        self.send_until = match self.config.stop_condition() {
-            StopCondition::Duration(duration) => Some(
-                started
-                    .checked_add(duration)
-                    .ok_or(BenchmarkError::ClockRange)?,
-            ),
-            StopCondition::QueryCount(_) => None,
-        };
-        loop {
-            match self.step() {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(BenchmarkError::Io(error)) => {
-                    let kind = error.kind();
-                    let message = error.to_string();
-                    if self.send_started.is_some() || self.pending.is_empty() {
-                        self.stats.record(QueryReport {
-                            outcome: QueryOutcome::SocketError(io::Error::new(
-                                kind,
-                                message.clone(),
-                            )),
-                            sent: false,
-                            elapsed: self
-                                .send_started
-                                .map_or(Duration::ZERO, |time| time.elapsed()),
-                            rejected: RejectedPackets::default(),
-                        })?;
-                    }
-                    while let Some(&id) = self.pending.keys().next() {
-                        self.complete(
-                            id,
-                            QueryOutcome::SocketError(io::Error::new(kind, message.clone())),
-                        )?;
-                    }
-                    self.shared.cancel(StopReason::SocketError);
-                    self.stop_reason = Some(StopReason::SocketError);
-                    break;
-                }
-                Err(error) => return Err(error),
-            }
-        }
+pub(super) fn run(config: &RunConfig, domains: &[DnsName]) -> Result<RunReport, BenchmarkError> {
+    let mut engine = Engine::new(config, domains)?;
 
-        Ok(RunReport {
-            workers: 1,
-            stats: self.stats,
-            elapsed: self.started.elapsed(),
-            stop_reason: self.stop_reason.expect("finished engine has a stop reason"),
-        })
+    loop {
+        match engine.step() {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(BenchmarkError::Io(error)) => {
+                let kind = error.kind();
+                let message = error.to_string();
+                if engine.send_started.is_some() || engine.pending.is_empty() {
+                    engine.stats.record(QueryReport {
+                        outcome: QueryOutcome::SocketError(io::Error::new(kind, message.clone())),
+                        sent: false,
+                        elapsed: engine
+                            .send_started
+                            .map_or(Duration::ZERO, |time| time.elapsed()),
+                        rejected: RejectedPackets::default(),
+                    })?;
+                }
+                while let Some(&id) = engine.pending.keys().next() {
+                    engine.complete(
+                        id,
+                        QueryOutcome::SocketError(io::Error::new(kind, message.clone())),
+                    )?;
+                }
+                engine.stop_reason = Some(StopReason::SocketError);
+                break;
+            }
+            Err(error) => return Err(error),
+        }
     }
 
-    pub(super) fn new(
-        config: &'a RunConfig,
-        domains: &'a [DnsName],
-        shared: &'a Shared,
-        concurrency: usize,
-    ) -> Result<Self, BenchmarkError> {
+    Ok(RunReport {
+        stats: engine.stats,
+        elapsed: engine.started.elapsed(),
+        stop_reason: engine
+            .stop_reason
+            .expect("finished engine has a stop reason"),
+    })
+}
+
+impl<'a> Engine<'a> {
+    fn new(config: &'a RunConfig, domains: &'a [DnsName]) -> Result<Self, BenchmarkError> {
         let poll = Poll::new()?;
-        let mut socket = shared.connect(config.server())?;
+        let mut socket = connect(config.server())?;
         poll.registry()
             .register(&mut socket, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
-        let waker = Arc::new(Waker::new(poll.registry(), WAKE)?);
-        shared
-            .wakers
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(waker);
+        let mut used_ports = [0u64; 1024];
+        let port = usize::from(socket.local_addr()?.port());
+        used_ports[port / 64] |= 1u64 << (port % 64);
         let stats = RunStats::new()?;
-        let pending = HashMap::with_capacity(concurrency);
-        let deadlines = VecDeque::with_capacity(concurrency);
+        let pending = HashMap::with_capacity(config.concurrency().get());
+        let deadlines = VecDeque::with_capacity(config.concurrency().get());
         let events = Events::with_capacity(8);
         let query_buffer = Vec::with_capacity(12 + 255 + 4);
         let receive_buffer = vec![0; 65_535];
@@ -137,15 +118,15 @@ impl<'a> Engine<'a> {
         Ok(Self {
             config,
             domains,
-            shared,
-            concurrency,
             socket,
             poll,
             events,
             pending,
             deadlines,
+            used_ports,
             next_id: 0,
-            domain_index: None,
+            domain_index: 0,
+            sent: 0,
             stats,
             query_buffer,
             receive_buffer,
@@ -158,13 +139,6 @@ impl<'a> Engine<'a> {
     }
 
     fn step(&mut self) -> Result<bool, BenchmarkError> {
-        if self.stop_reason.is_none()
-            && let Some(reason) = self.shared.stop_reason()
-        {
-            self.stop_reason = Some(reason);
-            self.send_started = None;
-            self.domain_index = None;
-        }
         self.expire()?;
         let sent_batch = self.send_batch()?;
         let receive_limit_reached = self.receive_batch()?;
@@ -175,7 +149,18 @@ impl<'a> Engine<'a> {
             && self.pending.is_empty()
             && self.stop_reason.is_none()
         {
-            let mut replacement = self.shared.connect(self.config.server())?;
+            let mut replacement = None;
+            for _ in 0..64 {
+                let candidate = connect(self.config.server())?;
+                let port = usize::from(candidate.local_addr()?.port());
+                let mask = 1u64 << (port % 64);
+                if self.used_ports[port / 64] & mask == 0 {
+                    self.used_ports[port / 64] |= mask;
+                    replacement = Some(candidate);
+                    break;
+                }
+            }
+            let mut replacement = replacement.ok_or(BenchmarkError::SourcePortsExhausted)?;
             self.poll.registry().deregister(&mut self.socket)?;
             self.poll.registry().register(
                 &mut replacement,
@@ -199,7 +184,7 @@ impl<'a> Engine<'a> {
             || (self.stop_reason.is_none()
                 && self.writable
                 && self.next_id <= u32::from(u16::MAX)
-                && self.pending.len() < self.concurrency)
+                && self.pending.len() < self.config.concurrency().get())
         {
             return Ok(true);
         }
@@ -247,33 +232,21 @@ impl<'a> Engine<'a> {
                 self.send_started = None;
                 break;
             }
-            if self.pending.len() == self.concurrency
+            if let StopCondition::QueryCount(count) = self.config.stop_condition()
+                && self.sent >= count.get()
+            {
+                self.stop_reason = Some(StopReason::QueryCount);
+                break;
+            }
+            if self.pending.len() == self.config.concurrency().get()
                 || self.next_id > u32::from(u16::MAX)
                 || !self.writable
             {
                 break;
             }
-            if let Some(reason) = self.shared.stop_reason() {
-                self.stop_reason = Some(reason);
-                self.send_started = None;
-                self.domain_index = None;
-                break;
-            }
-            let domain_index = match self.domain_index {
-                Some(index) => index,
-                None => {
-                    let Some(sequence) = self.shared.claim()? else {
-                        self.stop_reason = Some(StopReason::QueryCount);
-                        break;
-                    };
-                    let index = (sequence % self.domains.len() as u64) as usize;
-                    self.domain_index = Some(index);
-                    index
-                }
-            };
             let id = self.next_id as u16;
             encode_query(
-                &self.domains[domain_index],
+                &self.domains[self.domain_index],
                 id,
                 self.config.default_query_type(),
                 true,
@@ -292,7 +265,6 @@ impl<'a> Engine<'a> {
                 })?;
                 self.send_started = None;
                 self.stop_reason = Some(StopReason::SendDeadline);
-                self.shared.cancel(StopReason::SendDeadline);
                 break;
             }
             // Encoding and scheduler work may have consumed the final send window.
@@ -306,18 +278,15 @@ impl<'a> Engine<'a> {
                     self.pending.insert(
                         id,
                         PendingQuery {
-                            domain_index,
+                            domain_index: self.domain_index,
                             sent_at: started,
                         },
                     );
                     self.deadlines.push_back(id);
                     self.stats.peak_in_flight = self.stats.peak_in_flight.max(self.pending.len());
-                    let active = self.shared.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
-                    self.shared
-                        .peak_in_flight
-                        .fetch_max(active, Ordering::Relaxed);
                     self.next_id += 1;
-                    self.domain_index = None;
+                    self.domain_index = (self.domain_index + 1) % self.domains.len();
+                    self.sent += 1;
                     sent += 1;
                     self.send_started = None;
                 }
@@ -409,7 +378,7 @@ impl<'a> Engine<'a> {
             self.complete(id, QueryOutcome::Timeout)?;
         }
         // An early slow query must not retain an unbounded history of completed IDs.
-        if self.deadlines.len() > self.concurrency * 2 {
+        if self.deadlines.len() > self.config.concurrency().get() * 2 {
             self.deadlines.retain(|id| self.pending.contains_key(id));
         }
         if self.stop_reason.is_none()
@@ -425,7 +394,6 @@ impl<'a> Engine<'a> {
             })?;
             self.send_started = None;
             self.stop_reason = Some(StopReason::SendDeadline);
-            self.shared.cancel(StopReason::SendDeadline);
         }
         self.deadlines
             .front()
@@ -440,7 +408,6 @@ impl<'a> Engine<'a> {
 
     fn complete(&mut self, id: u16, outcome: QueryOutcome) -> Result<(), BenchmarkError> {
         let pending = self.pending.remove(&id).expect("query is pending");
-        self.shared.in_flight.fetch_sub(1, Ordering::Relaxed);
         self.stats.record(QueryReport {
             outcome,
             sent: true,
@@ -448,6 +415,16 @@ impl<'a> Engine<'a> {
             rejected: RejectedPackets::default(),
         })
     }
+}
+
+fn connect(server: SocketAddr) -> io::Result<UdpSocket> {
+    let local = match server {
+        SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+        SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
+    };
+    let socket = UdpSocket::bind(local)?;
+    socket.connect(server)?;
+    Ok(socket)
 }
 
 #[cfg(test)]

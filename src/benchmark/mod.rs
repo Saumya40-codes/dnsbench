@@ -1,7 +1,6 @@
 mod concurrent;
 mod input;
 mod results;
-mod workers;
 
 pub(crate) use input::load_domains;
 
@@ -21,7 +20,7 @@ use results::{RunReport, RunStats};
 
 #[derive(Debug, Error)]
 pub(crate) enum BenchmarkError {
-    #[error("concurrency must not exceed 65536 queries per worker")]
+    #[error("concurrency must not exceed 65536 queries on one socket")]
     UnsupportedConcurrency,
     #[error("the workload contains no domains")]
     EmptyWorkload,
@@ -37,24 +36,13 @@ pub(crate) enum BenchmarkError {
     LatencyRange,
     #[error("unable to allocate a fresh source port for transaction ID reuse")]
     SourcePortsExhausted,
-    #[error("unable to merge latency histograms: {0}")]
-    HistogramMerge(#[from] hdrhistogram::AdditionError),
-    #[error("benchmark worker panicked")]
-    WorkerPanicked,
-    #[error("query sequence exceeds the supported counter range")]
-    QueryCounterRange,
 }
 
 pub(crate) fn run(
     config: &RunConfig,
     domains: &mut [DnsName],
 ) -> Result<RunReport, BenchmarkError> {
-    if config
-        .concurrency()
-        .get()
-        .div_ceil(workers::worker_count(config))
-        > usize::from(u16::MAX) + 1
-    {
+    if config.concurrency().get() > usize::from(u16::MAX) + 1 {
         return Err(BenchmarkError::UnsupportedConcurrency);
     }
     if domains.is_empty() {
@@ -92,7 +80,7 @@ pub(crate) fn run(
     }
 
     if config.concurrency().get() > 1 {
-        return workers::run(config, domains);
+        return concurrent::run(config, domains);
     }
 
     let mut client = UdpClient::connect(config.server())?;
@@ -176,7 +164,6 @@ pub(crate) fn run(
     };
 
     Ok(RunReport {
-        workers: 1,
         stats,
         elapsed: started.elapsed(),
         stop_reason,

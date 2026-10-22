@@ -7,7 +7,6 @@ use std::{
 };
 
 use super::*;
-use crate::benchmark::workers::run_with_workers;
 use crate::config::{QueryOrder, QueryType, RunConfigInput};
 
 fn setup(concurrency: usize, stop: StopCondition, timeout: Duration) -> (UdpSocket, RunConfig) {
@@ -22,7 +21,6 @@ fn setup(concurrency: usize, stop: StopCondition, timeout: Duration) -> (UdpSock
         server: socket.local_addr().unwrap(),
         domains_path: "domains.txt".into(),
         concurrency,
-        workers: Some(1),
         stop_condition: stop,
         timeout,
         default_query_type: QueryType::A,
@@ -30,10 +28,6 @@ fn setup(concurrency: usize, stop: StopCondition, timeout: Duration) -> (UdpSock
     })
     .unwrap();
     (socket, config)
-}
-
-fn run(config: &RunConfig, domains: &[DnsName]) -> Result<RunReport, BenchmarkError> {
-    run_with_workers(config, domains, 1)
 }
 
 fn names() -> Vec<DnsName> {
@@ -230,8 +224,7 @@ fn slow_first_query_does_not_retain_completed_id_history() {
         Duration::from_secs(60),
     );
     let domains = names();
-    let shared = Shared::new(&config);
-    let mut engine = Engine::new(&config, &domains, &shared, config.concurrency().get()).unwrap();
+    let mut engine = Engine::new(&config, &domains).unwrap();
     for id in [0, 999] {
         engine.pending.insert(
             id,
@@ -255,8 +248,7 @@ fn blocked_send_has_a_deadline_and_does_not_cancel_sent_queries() {
         Duration::from_millis(80),
     );
     let domains = names();
-    let shared = Shared::new(&config);
-    let mut engine = Engine::new(&config, &domains, &shared, config.concurrency().get()).unwrap();
+    let mut engine = Engine::new(&config, &domains).unwrap();
     engine.pending.insert(
         0,
         PendingQuery {
@@ -264,7 +256,6 @@ fn blocked_send_has_a_deadline_and_does_not_cancel_sent_queries() {
             sent_at: Instant::now(),
         },
     );
-    shared.in_flight.store(1, Ordering::Relaxed);
     engine.deadlines.push_back(0);
     engine.writable = false;
     engine.send_started = Some(Instant::now() - config.timeout());
@@ -287,13 +278,12 @@ fn a_write_readiness_event_resumes_a_blocked_sender() {
         Duration::from_secs(2),
     );
     let domains = names();
-    let shared = Shared::new(&config);
-    let mut engine = Engine::new(&config, &domains, &shared, config.concurrency().get()).unwrap();
+    let mut engine = Engine::new(&config, &domains).unwrap();
     engine.writable = false;
     engine.send_started = Some(Instant::now());
     assert!(engine.step().unwrap());
     assert!(engine.writable);
-    assert_eq!(engine.stats.sent, 0);
+    assert_eq!(engine.sent, 0);
 }
 
 #[test]
@@ -317,7 +307,6 @@ fn concurrent_aaaa_queries_work_over_ipv6() {
         server: socket.local_addr().unwrap(),
         domains_path: "domains.txt".into(),
         concurrency: 2,
-        workers: None,
         stop_condition: StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
         timeout: Duration::from_secs(2),
         default_query_type: QueryType::Aaaa,

@@ -28,13 +28,9 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     domains: PathBuf,
 
-    /// Maximum outstanding queries across all workers (at most 65536 per worker)
+    /// Maximum outstanding queries (1..=65536)
     #[arg(long, default_value_t = 1)]
     concurrency: usize,
-
-    /// Maximum worker threads; defaults to available CPUs, bounded by concurrency and query count
-    #[arg(long, value_name = "COUNT")]
-    workers: Option<usize>,
 
     /// How long to send queries (integer followed by ns, us, ms, s, m, or h)
     #[arg(long, value_name = "TIME", value_parser = parse_duration)]
@@ -91,7 +87,6 @@ impl Cli {
             server: self.server,
             domains_path: self.domains,
             concurrency: self.concurrency,
-            workers: self.workers,
             stop_condition,
             timeout: self.timeout,
             default_query_type: self.query_type,

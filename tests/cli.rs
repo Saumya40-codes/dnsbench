@@ -75,7 +75,7 @@ fn cli_rejects_concurrency_it_cannot_execute() {
             "--domains",
         ])
         .arg(&file.0)
-        .args(["--queries", "3", "--concurrency", "65537", "--workers", "1"])
+        .args(["--queries", "3", "--concurrency", "65537"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -116,8 +116,6 @@ fn cli_executes_concurrent_queries_and_reports_peak_in_flight() {
             "3",
             "--concurrency",
             "3",
-            "--workers",
-            "3",
             "--shuffle",
             "--seed",
             "42",
@@ -132,15 +130,8 @@ fn cli_executes_concurrent_queries_and_reports_peak_in_flight() {
     );
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Concurrency: 3"));
-    assert!(text.contains("Workers: 3"));
     assert!(text.contains("Attempted: 3 | Sent: 3 | Responses: 3"));
-    let peak: usize = text
-        .lines()
-        .find_map(|line| line.strip_prefix("Peak queries in flight: "))
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!((1..=3).contains(&peak));
+    assert!(text.contains("Peak queries in flight: 3"));
     assert!(text.contains("Timeouts: 0 | Socket errors: 0"));
 }
 

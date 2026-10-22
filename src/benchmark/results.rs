@@ -38,7 +38,6 @@ impl fmt::Display for StopReason {
 }
 
 pub(crate) struct RunReport {
-    pub(crate) workers: usize,
     pub(crate) stats: RunStats,
     pub(crate) elapsed: Duration,
     pub(crate) stop_reason: StopReason,
@@ -59,33 +58,6 @@ pub(crate) struct RunStats {
 }
 
 impl RunStats {
-    pub(crate) fn merge(&mut self, other: Self) -> Result<(), BenchmarkError> {
-        self.attempted += other.attempted;
-        self.sent += other.sent;
-        self.responses += other.responses;
-        self.timeouts += other.timeouts;
-        self.socket_errors += other.socket_errors;
-        self.rejected.mismatched = self
-            .rejected
-            .mismatched
-            .saturating_add(other.rejected.mismatched);
-        self.rejected.malformed = self
-            .rejected
-            .malformed
-            .saturating_add(other.rejected.malformed);
-        self.socket_rotations += other.socket_rotations;
-        if other.last_socket_error.is_some() {
-            self.last_socket_error = other.last_socket_error;
-        }
-        for (count, additional) in self.rcodes.iter_mut().zip(other.rcodes) {
-            *count += additional;
-        }
-        for (histogram, additional) in self.latencies.iter_mut().zip(other.latencies) {
-            histogram.add(additional)?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn new() -> Result<Self, BenchmarkError> {
         // Fixed range and precision bound memory regardless of query count.
         let histogram = Histogram::new_with_bounds(1, u64::MAX, 3)?;
@@ -163,7 +135,6 @@ impl fmt::Display for RunReport {
             }
         };
         writeln!(f, "\nStop: {}", self.stop_reason)?;
-        writeln!(f, "Workers: {}", self.workers)?;
         writeln!(
             f,
             "Measured elapsed: {:.3}s (includes any final query completion)",
