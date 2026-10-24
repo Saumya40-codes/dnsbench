@@ -47,7 +47,7 @@ impl Shared {
     pub(super) fn claim(&self) -> Result<Option<u64>, BenchmarkError> {
         match self
             .next_query
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
                 if self.count.is_some_and(|count| next >= count) {
                     None
                 } else {
