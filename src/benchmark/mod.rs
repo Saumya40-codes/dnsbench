@@ -98,13 +98,18 @@ pub(crate) fn run(
     let mut next_id = 0u32;
     let mut domain_index = 0;
     let started = Instant::now();
+    let query_limit = match config.stop_condition() {
+        StopCondition::Once => Some(domains.len() as u64),
+        StopCondition::QueryCount(count) => Some(count.get()),
+        StopCondition::Duration(_) => None,
+    };
     let deadline = match config.stop_condition() {
         StopCondition::Duration(duration) => Some(
             started
                 .checked_add(duration)
                 .ok_or(BenchmarkError::ClockRange)?,
         ),
-        StopCondition::QueryCount(_) => None,
+        StopCondition::Once | StopCondition::QueryCount(_) => None,
     };
 
     let stop_reason = loop {
@@ -113,10 +118,11 @@ pub(crate) fn run(
         {
             break StopReason::Duration;
         }
-        if let StopCondition::QueryCount(count) = config.stop_condition()
-            && stats.sent >= count.get()
-        {
-            break StopReason::QueryCount;
+        if query_limit.is_some_and(|count| stats.sent >= count) {
+            break match config.stop_condition() {
+                StopCondition::Once => StopReason::WorkloadCompleted,
+                _ => StopReason::QueryCount,
+            };
         }
 
         if next_id > u32::from(u16::MAX) {

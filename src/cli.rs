@@ -13,9 +13,9 @@ use crate::duration::parse_duration;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Benchmark a DNS server")]
+#[command(after_help = "Without --duration or --queries, each workload entry is queried once.")]
 #[command(group(
     ArgGroup::new("stop")
-    .required(true)
     .multiple(false)
     .args(["duration", "queries"])
 ))]
@@ -67,7 +67,7 @@ pub struct Cli {
 
 #[derive(Debug, Error)]
 pub enum CliConfigError {
-    #[error("specify exactly one of --duration or --queries")]
+    #[error("--duration and --queries cannot be used together")]
     InvalidStopCondition,
 
     #[error("--shuffle and --seed must be supplied together")]
@@ -80,6 +80,7 @@ pub enum CliConfigError {
 impl Cli {
     pub fn into_config(self) -> Result<RunConfig, CliConfigError> {
         let stop_condition = match (self.duration, self.queries) {
+            (None, None) => StopCondition::Once,
             (Some(duration), None) => StopCondition::Duration(duration),
             (None, Some(count)) => StopCondition::QueryCount(count),
             _ => return Err(CliConfigError::InvalidStopCondition),
@@ -171,10 +172,10 @@ mod tests {
     }
 
     #[test]
-    fn requires_exactly_one_stop_condition() {
+    fn defaults_to_one_pass_and_rejects_conflicting_stop_conditions() {
         assert_eq!(
-            parse(&[]).unwrap_err().kind(),
-            ErrorKind::MissingRequiredArgument
+            parse(&[]).unwrap().into_config().unwrap().stop_condition(),
+            StopCondition::Once
         );
         assert_eq!(
             parse(&["--duration", "30s", "--queries", "100"])

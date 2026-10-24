@@ -194,7 +194,7 @@ fn query_reservations_are_unique_under_contention() {
         1,
         StopCondition::QueryCount(NonZeroU64::new(1_003).unwrap()),
     );
-    let shared = Shared::new(&config);
+    let shared = Shared::new(&config, 1);
     let mut sequences = thread::scope(|scope| {
         let handles: Vec<_> = (0..4)
             .map(|_| {
@@ -219,6 +219,15 @@ fn query_reservations_are_unique_under_contention() {
 }
 
 #[test]
+fn one_pass_budget_is_the_number_of_workload_entries() {
+    let (_socket, config) = setup(8, 4, 2, StopCondition::Once);
+    let shared = Shared::new(&config, 2);
+    assert_eq!(shared.claim().unwrap(), Some(0));
+    assert_eq!(shared.claim().unwrap(), Some(1));
+    assert_eq!(shared.claim().unwrap(), None);
+}
+
+#[test]
 fn source_port_history_outlives_individual_worker_sockets() {
     let (_server, config) = setup(
         8,
@@ -226,7 +235,7 @@ fn source_port_history_outlives_individual_worker_sockets() {
         1,
         StopCondition::QueryCount(NonZeroU64::new(8).unwrap()),
     );
-    let shared = Shared::new(&config);
+    let shared = Shared::new(&config, 1);
     let first = shared.connect(config.server()).unwrap();
     let first_port = usize::from(first.local_addr().unwrap().port());
     drop(first);

@@ -90,6 +90,61 @@ fn cli_rejects_concurrency_it_cannot_execute() {
 }
 
 #[test]
+fn cli_defaults_to_one_pass_and_finishes_after_responses_or_timeouts() {
+    for (concurrency, workers, threads) in [(1, 1, 1), (8, 4, 2)] {
+        let file = DomainsFile::new("one-pass");
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let address = socket.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let mut packet = [0; 512];
+            for index in 0..2 {
+                let (length, peer) = socket.recv_from(&mut packet).unwrap();
+                if index == 0 {
+                    packet[2..4].copy_from_slice(&0x8183u16.to_be_bytes());
+                    socket.send_to(&packet[..length], peer).unwrap();
+                }
+            }
+            socket
+        });
+        let output = Command::new(env!("CARGO_BIN_EXE_dns-bench"))
+            .args(["--server", &address.to_string(), "--domains"])
+            .arg(&file.0)
+            .args([
+                "--concurrency",
+                &concurrency.to_string(),
+                "--workers",
+                &workers.to_string(),
+                "--threads",
+                &threads.to_string(),
+                "--timeout",
+                "100ms",
+            ])
+            .output()
+            .unwrap();
+        let socket = handle.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("Mode: one pass through the workload"));
+        assert!(text.contains("Stop: workload completed"));
+        assert!(text.contains("Attempted: 2 | Sent: 2 | Responses: 1"));
+        assert!(text.contains("Timeouts: 1 | Socket errors: 0"));
+        assert!(text.contains("NXDOMAIN(3)=1"));
+        socket.set_nonblocking(true).unwrap();
+        assert_eq!(
+            socket.recv_from(&mut [0; 512]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[test]
 fn cli_executes_concurrent_queries_and_reports_peak_in_flight() {
     let file = DomainsFile::new("concurrent");
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();

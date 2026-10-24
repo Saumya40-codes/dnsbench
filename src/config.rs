@@ -15,6 +15,7 @@ pub enum QueryType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopCondition {
+    Once,
     Duration(Duration),
     QueryCount(NonZeroU64),
 }

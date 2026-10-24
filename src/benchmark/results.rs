@@ -20,6 +20,7 @@ const LATENCY_GROUPS: [&str; 6] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StopReason {
+    WorkloadCompleted,
     QueryCount,
     Duration,
     SocketError,
@@ -29,6 +30,7 @@ pub(crate) enum StopReason {
 impl fmt::Display for StopReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::WorkloadCompleted => "workload completed",
             Self::QueryCount => "query count reached",
             Self::Duration => "duration reached",
             Self::SocketError => "socket failure; run stopped early",

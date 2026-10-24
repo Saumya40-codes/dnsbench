@@ -28,10 +28,11 @@ pub(super) struct Shared {
 }
 
 impl Shared {
-    pub(super) fn new(config: &RunConfig) -> Self {
+    pub(super) fn new(config: &RunConfig, domain_count: usize) -> Self {
         Self {
             next_query: AtomicU64::new(0),
             count: match config.stop_condition() {
+                StopCondition::Once => Some(domain_count as u64),
                 StopCondition::QueryCount(count) => Some(count.get()),
                 StopCondition::Duration(_) => None,
             },
@@ -113,7 +114,7 @@ pub(super) fn run_with_workers(
     let config = Arc::new(config.clone());
     let domains: Arc<[DnsName]> = Arc::from(domains);
     runtime.block_on(async move {
-        let shared = Arc::new(Shared::new(&config));
+        let shared = Arc::new(Shared::new(&config, domains.len()));
         let mut stats = RunStats::new()?;
         let mut engines = Vec::with_capacity(workers);
         for index in 0..workers {
@@ -173,6 +174,7 @@ pub(super) fn run_with_workers(
         let stop_reason = shared
             .stop_reason()
             .unwrap_or(match config.stop_condition() {
+                StopCondition::Once => StopReason::WorkloadCompleted,
                 StopCondition::Duration(_) => StopReason::Duration,
                 StopCondition::QueryCount(_) => StopReason::QueryCount,
             });

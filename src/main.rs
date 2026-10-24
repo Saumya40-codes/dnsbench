@@ -53,6 +53,7 @@ fn print_config(config: &RunConfig) {
     println!("Concurrency: {}", config.concurrency());
 
     match config.stop_condition() {
+        StopCondition::Once => println!("Mode: one pass through the workload"),
         StopCondition::Duration(duration) => println!("Duration: {duration:?}"),
         StopCondition::QueryCount(count) => println!("Queries: {count}"),
     }

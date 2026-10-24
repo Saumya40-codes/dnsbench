@@ -56,7 +56,7 @@ impl Engine {
                     .checked_add(duration)
                     .ok_or(BenchmarkError::ClockRange)?,
             ),
-            StopCondition::QueryCount(_) => None,
+            StopCondition::Once | StopCondition::QueryCount(_) => None,
         };
         loop {
             match self.step().await {
@@ -121,7 +121,7 @@ impl Engine {
                     .checked_add(duration)
                     .ok_or(BenchmarkError::ClockRange)?,
             ),
-            StopCondition::QueryCount(_) => None,
+            StopCondition::Once | StopCondition::QueryCount(_) => None,
         };
         Ok(Self {
             config,

@@ -231,7 +231,7 @@ async fn slow_first_query_does_not_retain_completed_id_history() {
         Duration::from_secs(60),
     );
     let domains = names();
-    let shared = Arc::new(Shared::new(&config));
+    let shared = Arc::new(Shared::new(&config, names().len()));
     let mut engine = Engine::new(
         Arc::new(config.clone()),
         Arc::from(domains),
@@ -262,7 +262,7 @@ async fn blocked_send_has_a_deadline_and_does_not_cancel_sent_queries() {
         Duration::from_millis(80),
     );
     let domains = names();
-    let shared = Arc::new(Shared::new(&config));
+    let shared = Arc::new(Shared::new(&config, names().len()));
     let mut engine = Engine::new(
         Arc::new(config.clone()),
         Arc::from(domains),
@@ -300,7 +300,7 @@ async fn a_write_readiness_event_resumes_a_blocked_sender() {
         Duration::from_secs(2),
     );
     let domains = names();
-    let shared = Arc::new(Shared::new(&config));
+    let shared = Arc::new(Shared::new(&config, names().len()));
     let mut engine = Engine::new(
         Arc::new(config.clone()),
         Arc::from(domains),
@@ -322,7 +322,7 @@ async fn cancellation_wakes_a_worker_waiting_on_a_long_query_deadline() {
         StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
         Duration::from_secs(60),
     );
-    let shared = Arc::new(Shared::new(&config));
+    let shared = Arc::new(Shared::new(&config, names().len()));
     let mut engine =
         Engine::new(Arc::new(config), Arc::from(names()), Arc::clone(&shared), 2).unwrap();
     for id in [0, 1] {
@@ -359,7 +359,7 @@ async fn a_worker_sees_cancellation_that_happened_before_it_subscribed() {
         StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
         Duration::from_secs(60),
     );
-    let shared = Arc::new(Shared::new(&config));
+    let shared = Arc::new(Shared::new(&config, names().len()));
     shared.cancel(StopReason::SocketError);
     let mut engine = Engine::new(Arc::new(config), Arc::from(names()), shared, 2).unwrap();
     assert!(!engine.step().await.unwrap());
