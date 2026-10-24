@@ -28,7 +28,7 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     domains: PathBuf,
 
-    /// Maximum outstanding queries; currently only 1 is supported
+    /// Maximum outstanding queries (1..=65536)
     #[arg(long, default_value_t = 1)]
     concurrency: usize,
 

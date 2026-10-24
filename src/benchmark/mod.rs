@@ -1,3 +1,4 @@
+mod concurrent;
 mod input;
 mod results;
 
@@ -19,7 +20,7 @@ use results::{RunReport, RunStats};
 
 #[derive(Debug, Error)]
 pub(crate) enum BenchmarkError {
-    #[error("the sequential engine requires --concurrency 1")]
+    #[error("concurrency must not exceed 65536 queries on one socket")]
     UnsupportedConcurrency,
     #[error("the workload contains no domains")]
     EmptyWorkload,
@@ -41,7 +42,7 @@ pub(crate) fn run(
     config: &RunConfig,
     domains: &mut [DnsName],
 ) -> Result<RunReport, BenchmarkError> {
-    if config.concurrency().get() != 1 {
+    if config.concurrency().get() > usize::from(u16::MAX) + 1 {
         return Err(BenchmarkError::UnsupportedConcurrency);
     }
     if domains.is_empty() {
@@ -76,6 +77,10 @@ pub(crate) fn run(
                 }
             }
         }
+    }
+
+    if config.concurrency().get() > 1 {
+        return concurrent::run(config, domains);
     }
 
     let mut client = UdpClient::connect(config.server())?;

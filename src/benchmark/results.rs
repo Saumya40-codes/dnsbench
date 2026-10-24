@@ -52,6 +52,7 @@ pub(crate) struct RunStats {
     pub(crate) rejected: RejectedPackets,
     pub(crate) rcodes: [u64; 16],
     pub(crate) socket_rotations: u64,
+    pub(crate) peak_in_flight: usize,
     pub(crate) last_socket_error: Option<String>,
     pub(crate) latencies: [Histogram<u64>; 6],
 }
@@ -69,6 +70,7 @@ impl RunStats {
             rejected: RejectedPackets::default(),
             rcodes: [0; 16],
             socket_rotations: 0,
+            peak_in_flight: 0,
             last_socket_error: None,
             latencies: std::array::from_fn(|_| histogram.clone()),
         })
@@ -88,6 +90,7 @@ impl RunStats {
         self.latencies[group].record(nanos)?;
         self.attempted += 1;
         self.sent += u64::from(report.sent);
+        self.peak_in_flight = self.peak_in_flight.max(usize::from(report.sent));
         self.rejected.mismatched = self
             .rejected
             .mismatched
@@ -169,6 +172,7 @@ impl fmt::Display for RunReport {
             stats.rejected.mismatched, stats.rejected.malformed
         )?;
         writeln!(f, "Socket rotations: {}", stats.socket_rotations)?;
+        writeln!(f, "Peak queries in flight: {}", stats.peak_in_flight)?;
         if let Some(error) = &stats.last_socket_error {
             writeln!(f, "Last socket error: {error}")?;
         }
