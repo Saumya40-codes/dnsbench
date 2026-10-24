@@ -21,8 +21,8 @@ use results::{RunReport, RunStats};
 
 #[derive(Debug, Error)]
 pub(crate) enum BenchmarkError {
-    #[error("concurrency must not exceed 65536 queries per worker")]
-    UnsupportedConcurrency,
+    #[error("max-in-flight must not exceed 65536 queries per worker")]
+    UnsupportedInFlightLimit,
     #[error("the workload contains no domains")]
     EmptyWorkload,
     #[error("duration or timeout exceeds the clock's range")]
@@ -49,8 +49,13 @@ pub(crate) fn run(
     config: &RunConfig,
     domains: &mut [DnsName],
 ) -> Result<RunReport, BenchmarkError> {
-    if config.concurrency().get().div_ceil(config.workers().get()) > usize::from(u16::MAX) + 1 {
-        return Err(BenchmarkError::UnsupportedConcurrency);
+    if config
+        .max_in_flight()
+        .get()
+        .div_ceil(config.workers().get())
+        > usize::from(u16::MAX) + 1
+    {
+        return Err(BenchmarkError::UnsupportedInFlightLimit);
     }
     if domains.is_empty() {
         return Err(BenchmarkError::EmptyWorkload);
@@ -86,7 +91,7 @@ pub(crate) fn run(
         }
     }
 
-    if config.concurrency().get() > 1 || config.threads().get() > 1 {
+    if config.max_in_flight().get() > 1 || config.threads().get() > 1 {
         return workers::run(config, domains);
     }
 

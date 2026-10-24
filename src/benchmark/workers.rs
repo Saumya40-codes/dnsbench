@@ -118,8 +118,8 @@ pub(super) fn run_with_workers(
         let mut stats = RunStats::new()?;
         let mut engines = Vec::with_capacity(workers);
         for index in 0..workers {
-            let quota = config.concurrency().get() / workers
-                + usize::from(index < config.concurrency().get() % workers);
+            let quota = config.max_in_flight().get() / workers
+                + usize::from(index < config.max_in_flight().get() % workers);
             engines.push(Engine::new(
                 Arc::clone(&config),
                 Arc::clone(&domains),

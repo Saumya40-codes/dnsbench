@@ -54,7 +54,7 @@ fn cli_executes_queries_and_separates_answer_and_error_populations() {
     );
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Loaded domains: 2"));
-    assert!(text.contains("Concurrency: 1"));
+    assert!(text.contains("Max in flight: 1"));
     assert!(text.contains("Workers: 1"));
     assert!(text.contains("Runtime threads: 1"));
     assert!(text.contains("Seed: 42"));
@@ -67,8 +67,8 @@ fn cli_executes_queries_and_separates_answer_and_error_populations() {
 }
 
 #[test]
-fn cli_rejects_concurrency_it_cannot_execute() {
-    let file = DomainsFile::new("concurrency");
+fn cli_rejects_max_in_flight_it_cannot_execute() {
+    let file = DomainsFile::new("max_in_flight");
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_dns-bench"))
         .args([
@@ -77,11 +77,20 @@ fn cli_rejects_concurrency_it_cannot_execute() {
             "--domains",
         ])
         .arg(&file.0)
-        .args(["--queries", "3", "--concurrency", "65537", "--workers", "1"])
+        .args([
+            "--queries",
+            "3",
+            "--max-in-flight",
+            "65537",
+            "--workers",
+            "1",
+        ])
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("concurrency must not exceed 65536"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("max-in-flight must not exceed 65536")
+    );
     socket.set_nonblocking(true).unwrap();
     assert_eq!(
         socket.recv_from(&mut [0; 512]).unwrap_err().kind(),
@@ -91,7 +100,7 @@ fn cli_rejects_concurrency_it_cannot_execute() {
 
 #[test]
 fn cli_defaults_to_one_pass_and_finishes_after_responses_or_timeouts() {
-    for (concurrency, workers, threads) in [(1, 1, 1), (8, 4, 2)] {
+    for (max_in_flight, workers, threads) in [(1, 1, 1), (8, 4, 2)] {
         let file = DomainsFile::new("one-pass");
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket
@@ -113,8 +122,8 @@ fn cli_defaults_to_one_pass_and_finishes_after_responses_or_timeouts() {
             .args(["--server", &address.to_string(), "--domains"])
             .arg(&file.0)
             .args([
-                "--concurrency",
-                &concurrency.to_string(),
+                "--max-in-flight",
+                &max_in_flight.to_string(),
                 "--workers",
                 &workers.to_string(),
                 "--threads",
@@ -171,7 +180,7 @@ fn cli_executes_concurrent_queries_and_reports_peak_in_flight() {
         .args([
             "--queries",
             "3",
-            "--concurrency",
+            "--max-in-flight",
             "3",
             "--workers",
             "3",
@@ -188,7 +197,7 @@ fn cli_executes_concurrent_queries_and_reports_peak_in_flight() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains("Concurrency: 3"));
+    assert!(text.contains("Max in flight: 3"));
     assert!(text.contains("Workers: 3"));
     assert!(text.contains("Runtime threads: 1"));
     assert!(text.contains("Attempted: 3 | Sent: 3 | Responses: 3"));

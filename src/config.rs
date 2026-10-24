@@ -30,7 +30,7 @@ pub enum QueryOrder {
 pub struct RunConfigInput {
     pub server: SocketAddr,
     pub domains_path: PathBuf,
-    pub concurrency: usize,
+    pub max_in_flight: usize,
     pub workers: usize,
     pub threads: usize,
     pub stop_condition: StopCondition,
@@ -43,7 +43,7 @@ pub struct RunConfigInput {
 pub struct RunConfig {
     server: SocketAddr,
     domains_path: PathBuf,
-    concurrency: NonZeroUsize,
+    max_in_flight: NonZeroUsize,
     workers: NonZeroUsize,
     threads: NonZeroUsize,
     stop_condition: StopCondition,
@@ -63,8 +63,8 @@ pub enum ConfigError {
     #[error("domains file path must not be empty")]
     EmptyDomainsPath,
 
-    #[error("concurrency must be greater than zero")]
-    ZeroConcurrency,
+    #[error("max-in-flight must be greater than zero")]
+    ZeroMaxInFlight,
 
     #[error("worker count must be greater than zero")]
     ZeroWorkers,
@@ -72,7 +72,7 @@ pub enum ConfigError {
     #[error("runtime thread count must be greater than zero")]
     ZeroThreads,
 
-    #[error("worker count must not exceed concurrency")]
+    #[error("--max-in-flight must be at least the worker count")]
     TooManyWorkers,
 
     #[error("benchmark duration must be greater than zero")]
@@ -98,11 +98,11 @@ impl TryFrom<RunConfigInput> for RunConfig {
             return Err(ConfigError::EmptyDomainsPath);
         }
 
-        let concurrency =
-            NonZeroUsize::new(value.concurrency).ok_or(ConfigError::ZeroConcurrency)?;
+        let max_in_flight =
+            NonZeroUsize::new(value.max_in_flight).ok_or(ConfigError::ZeroMaxInFlight)?;
         let workers = NonZeroUsize::new(value.workers).ok_or(ConfigError::ZeroWorkers)?;
         let threads = NonZeroUsize::new(value.threads).ok_or(ConfigError::ZeroThreads)?;
-        if workers.get() > concurrency.get() {
+        if workers.get() > max_in_flight.get() {
             return Err(ConfigError::TooManyWorkers);
         }
 
@@ -119,7 +119,7 @@ impl TryFrom<RunConfigInput> for RunConfig {
         Ok(Self {
             server: value.server,
             domains_path: value.domains_path,
-            concurrency,
+            max_in_flight,
             workers,
             threads,
             stop_condition: value.stop_condition,
@@ -139,8 +139,8 @@ impl RunConfig {
         &self.domains_path
     }
 
-    pub fn concurrency(&self) -> NonZeroUsize {
-        self.concurrency
+    pub fn max_in_flight(&self) -> NonZeroUsize {
+        self.max_in_flight
     }
 
     pub fn workers(&self) -> NonZeroUsize {
@@ -176,7 +176,7 @@ mod tests {
         RunConfigInput {
             server: SocketAddr::from(([127, 0, 0, 1], 53)),
             domains_path: PathBuf::from("domains.txt"),
-            concurrency: 64,
+            max_in_flight: 64,
             workers: 1,
             threads: 1,
             stop_condition: StopCondition::Duration(Duration::from_secs(30)),
@@ -187,13 +187,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_concurrency() {
+    fn rejects_zero_max_in_flight() {
         let mut input = valid_input();
-        input.concurrency = 0;
+        input.max_in_flight = 0;
 
         assert_eq!(
             RunConfig::try_from(input).unwrap_err(),
-            ConfigError::ZeroConcurrency,
+            ConfigError::ZeroMaxInFlight,
         );
     }
 
@@ -217,7 +217,7 @@ mod tests {
             ConfigError::ZeroWorkers
         );
         let mut input = valid_input();
-        input.workers = input.concurrency + 1;
+        input.workers = input.max_in_flight + 1;
         assert_eq!(
             RunConfig::try_from(input).unwrap_err(),
             ConfigError::TooManyWorkers

@@ -10,7 +10,7 @@ use super::*;
 use crate::benchmark::workers::run_with_workers;
 use crate::config::{QueryOrder, QueryType, RunConfigInput};
 
-fn setup(concurrency: usize, stop: StopCondition, timeout: Duration) -> (UdpSocket, RunConfig) {
+fn setup(max_in_flight: usize, stop: StopCondition, timeout: Duration) -> (UdpSocket, RunConfig) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -21,7 +21,7 @@ fn setup(concurrency: usize, stop: StopCondition, timeout: Duration) -> (UdpSock
     let config = RunConfig::try_from(RunConfigInput {
         server: socket.local_addr().unwrap(),
         domains_path: "domains.txt".into(),
-        concurrency,
+        max_in_flight,
         workers: 1,
         threads: 1,
         stop_condition: stop,
@@ -174,7 +174,7 @@ fn duration_stops_new_sends_and_drains_every_pending_query() {
 }
 
 #[test]
-fn count_smaller_than_concurrency_does_not_overshoot() {
+fn count_smaller_than_max_in_flight_does_not_overshoot() {
     let (socket, config) = setup(
         64,
         StopCondition::QueryCount(NonZeroU64::new(3).unwrap()),
@@ -236,7 +236,7 @@ async fn slow_first_query_does_not_retain_completed_id_history() {
         Arc::new(config.clone()),
         Arc::from(domains),
         Arc::clone(&shared),
-        config.concurrency().get(),
+        config.max_in_flight().get(),
     )
     .unwrap();
     for id in [0, 999] {
@@ -267,7 +267,7 @@ async fn blocked_send_has_a_deadline_and_does_not_cancel_sent_queries() {
         Arc::new(config.clone()),
         Arc::from(domains),
         Arc::clone(&shared),
-        config.concurrency().get(),
+        config.max_in_flight().get(),
     )
     .unwrap();
     engine.pending.insert(
@@ -305,7 +305,7 @@ async fn a_write_readiness_event_resumes_a_blocked_sender() {
         Arc::new(config.clone()),
         Arc::from(domains),
         Arc::clone(&shared),
-        config.concurrency().get(),
+        config.max_in_flight().get(),
     )
     .unwrap();
     engine.writable = false;
@@ -387,7 +387,7 @@ fn concurrent_aaaa_queries_work_over_ipv6() {
     let config = RunConfig::try_from(RunConfigInput {
         server: socket.local_addr().unwrap(),
         domains_path: "domains.txt".into(),
-        concurrency: 2,
+        max_in_flight: 2,
         workers: 1,
         threads: 1,
         stop_condition: StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),

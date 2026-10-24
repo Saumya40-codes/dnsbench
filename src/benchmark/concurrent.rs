@@ -30,7 +30,7 @@ pub(super) struct Engine {
     config: Arc<RunConfig>,
     domains: Arc<[DnsName]>,
     shared: Arc<Shared>,
-    concurrency: usize,
+    max_in_flight: usize,
     socket: UdpSocket,
     stop_updates: watch::Receiver<()>,
     pending: HashMap<u16, PendingQuery>,
@@ -105,13 +105,13 @@ impl Engine {
         config: Arc<RunConfig>,
         domains: Arc<[DnsName]>,
         shared: Arc<Shared>,
-        concurrency: usize,
+        max_in_flight: usize,
     ) -> Result<Self, BenchmarkError> {
         let socket = UdpSocket::from_std(shared.connect(config.server())?)?;
         let stop_updates = shared.stop_updates.subscribe();
         let stats = RunStats::new()?;
-        let pending = HashMap::with_capacity(concurrency);
-        let deadlines = VecDeque::with_capacity(concurrency);
+        let pending = HashMap::with_capacity(max_in_flight);
+        let deadlines = VecDeque::with_capacity(max_in_flight);
         let query_buffer = Vec::with_capacity(12 + 255 + 4);
         let receive_buffer = vec![0; 65_535];
         let started = Instant::now();
@@ -127,7 +127,7 @@ impl Engine {
             config,
             domains,
             shared,
-            concurrency,
+            max_in_flight,
             socket,
             stop_updates,
             pending,
@@ -181,7 +181,7 @@ impl Engine {
             || (self.stop_reason.is_none()
                 && self.writable
                 && self.next_id <= u32::from(u16::MAX)
-                && self.pending.len() < self.concurrency)
+                && self.pending.len() < self.max_in_flight)
         {
             return Ok(true);
         }
@@ -237,7 +237,7 @@ impl Engine {
                 self.send_started = None;
                 break;
             }
-            if self.pending.len() == self.concurrency
+            if self.pending.len() == self.max_in_flight
                 || self.next_id > u32::from(u16::MAX)
                 || !self.writable
             {
@@ -399,7 +399,7 @@ impl Engine {
             self.complete(id, QueryOutcome::Timeout)?;
         }
         // An early slow query must not retain an unbounded history of completed IDs.
-        if self.deadlines.len() > self.concurrency * 2 {
+        if self.deadlines.len() > self.max_in_flight * 2 {
             self.deadlines.retain(|id| self.pending.contains_key(id));
         }
         if self.stop_reason.is_none()

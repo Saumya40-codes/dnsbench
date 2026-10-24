@@ -50,7 +50,7 @@ fn main() -> ExitCode {
 fn print_config(config: &RunConfig) {
     println!("Server: {}", config.server());
     println!("Domains: {}", config.domains_path().display());
-    println!("Concurrency: {}", config.concurrency());
+    println!("Max in flight: {}", config.max_in_flight());
 
     match config.stop_condition() {
         StopCondition::Once => println!("Mode: one pass through the workload"),

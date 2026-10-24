@@ -4,7 +4,7 @@ use super::*;
 use crate::config::{QueryOrder, QueryType, RunConfigInput};
 
 fn setup(
-    concurrency: usize,
+    max_in_flight: usize,
     workers: usize,
     threads: usize,
     stop: StopCondition,
@@ -19,7 +19,7 @@ fn setup(
     let config = RunConfig::try_from(RunConfigInput {
         server: socket.local_addr().unwrap(),
         domains_path: "domains.txt".into(),
-        concurrency,
+        max_in_flight,
         workers,
         threads,
         stop_condition: stop,
@@ -32,7 +32,7 @@ fn setup(
 }
 
 #[test]
-fn workers_share_count_and_concurrency_and_match_identical_ids_on_distinct_sockets() {
+fn workers_share_count_and_max_in_flight_and_match_identical_ids_on_distinct_sockets() {
     let (socket, config) = setup(
         8,
         3,

@@ -29,8 +29,8 @@ pub struct Cli {
     domains: PathBuf,
 
     /// Maximum outstanding queries across all workers (at most 65536 per worker)
-    #[arg(long, default_value_t = 1)]
-    concurrency: usize,
+    #[arg(long, alias = "concurrency", default_value_t = 1)]
+    max_in_flight: usize,
 
     /// Number of logical DNS workers, each owning a socket and histogram
     #[arg(long, default_value_t = 1, value_name = "COUNT")]
@@ -95,7 +95,7 @@ impl Cli {
         let input = RunConfigInput {
             server: self.server,
             domains_path: self.domains,
-            concurrency: self.concurrency,
+            max_in_flight: self.max_in_flight,
             workers: self.workers,
             threads: self.threads,
             stop_condition,
@@ -228,7 +228,7 @@ mod tests {
             .unwrap()
             .into_config()
             .unwrap();
-        assert_eq!(config.concurrency().get(), 1);
+        assert_eq!(config.max_in_flight().get(), 1);
         assert_eq!(config.workers().get(), 1);
         assert_eq!(config.threads().get(), 1);
         assert_eq!(config.timeout(), Duration::from_secs(2));
@@ -240,8 +240,8 @@ mod tests {
     }
 
     #[test]
-    fn concurrency_does_not_increase_default_workers_or_threads() {
-        let config = parse(&["--duration", "30s", "--concurrency", "64"])
+    fn max_in_flight_does_not_increase_default_workers_or_threads() {
+        let config = parse(&["--duration", "30s", "--max-in-flight", "64"])
             .unwrap()
             .into_config()
             .unwrap();
@@ -254,7 +254,7 @@ mod tests {
         let config = parse(&[
             "--queries",
             "100",
-            "--concurrency",
+            "--max-in-flight",
             "64",
             "--workers",
             "8",
@@ -264,9 +264,23 @@ mod tests {
         .unwrap()
         .into_config()
         .unwrap();
-        assert_eq!(config.concurrency().get(), 64);
+        assert_eq!(config.max_in_flight().get(), 64);
         assert_eq!(config.workers().get(), 8);
         assert_eq!(config.threads().get(), 2);
+    }
+
+    #[test]
+    fn max_in_flight_accepts_the_previous_concurrency_spelling() {
+        for flag in ["--max-in-flight", "--concurrency"] {
+            let config = parse(&[flag, "8"]).unwrap().into_config().unwrap();
+            assert_eq!(config.max_in_flight().get(), 8);
+        }
+        assert_eq!(
+            parse(&["--max-in-flight", "8", "--concurrency", "16"])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ArgumentConflict
+        );
     }
 
     #[test]
@@ -278,8 +292,8 @@ mod tests {
                 ConfigError::ZeroTimeout,
             ),
             (
-                vec!["--duration", "30s", "--concurrency", "0"],
-                ConfigError::ZeroConcurrency,
+                vec!["--duration", "30s", "--max-in-flight", "0"],
+                ConfigError::ZeroMaxInFlight,
             ),
         ] {
             assert!(matches!(
