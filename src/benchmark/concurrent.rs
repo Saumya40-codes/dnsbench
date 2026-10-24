@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
+use tokio::{io::Interest, net::UdpSocket, sync::watch};
 
 use crate::{
     config::{RunConfig, StopCondition},
@@ -18,9 +18,7 @@ use crate::{
 
 use super::{BenchmarkError, RunReport, RunStats, StopReason, workers::Shared};
 
-const SOCKET: Token = Token(0);
 const BATCH_SIZE: usize = 256;
-const WAKE: Token = Token(1);
 
 #[derive(Debug)]
 struct PendingQuery {
@@ -28,14 +26,13 @@ struct PendingQuery {
     sent_at: Instant,
 }
 
-pub(super) struct Engine<'a> {
-    config: &'a RunConfig,
-    domains: &'a [DnsName],
-    shared: &'a Shared,
+pub(super) struct Engine {
+    config: Arc<RunConfig>,
+    domains: Arc<[DnsName]>,
+    shared: Arc<Shared>,
     concurrency: usize,
     socket: UdpSocket,
-    poll: Poll,
-    events: Events,
+    stop_updates: watch::Receiver<()>,
     pending: HashMap<u16, PendingQuery>,
     deadlines: VecDeque<u16>,
     next_id: u32,
@@ -50,8 +47,8 @@ pub(super) struct Engine<'a> {
     stop_reason: Option<StopReason>,
 }
 
-impl<'a> Engine<'a> {
-    pub(super) fn run(mut self, started: Instant) -> Result<RunReport, BenchmarkError> {
+impl Engine {
+    pub(super) async fn run(mut self, started: Instant) -> Result<RunReport, BenchmarkError> {
         self.started = started;
         self.send_until = match self.config.stop_condition() {
             StopCondition::Duration(duration) => Some(
@@ -62,8 +59,8 @@ impl<'a> Engine<'a> {
             StopCondition::QueryCount(_) => None,
         };
         loop {
-            match self.step() {
-                Ok(true) => {}
+            match self.step().await {
+                Ok(true) => tokio::task::yield_now().await,
                 Ok(false) => break,
                 Err(BenchmarkError::Io(error)) => {
                     let kind = error.kind();
@@ -97,6 +94,7 @@ impl<'a> Engine<'a> {
 
         Ok(RunReport {
             workers: 1,
+            threads: self.config.threads().get(),
             stats: self.stats,
             elapsed: self.started.elapsed(),
             stop_reason: self.stop_reason.expect("finished engine has a stop reason"),
@@ -104,25 +102,16 @@ impl<'a> Engine<'a> {
     }
 
     pub(super) fn new(
-        config: &'a RunConfig,
-        domains: &'a [DnsName],
-        shared: &'a Shared,
+        config: Arc<RunConfig>,
+        domains: Arc<[DnsName]>,
+        shared: Arc<Shared>,
         concurrency: usize,
     ) -> Result<Self, BenchmarkError> {
-        let poll = Poll::new()?;
-        let mut socket = shared.connect(config.server())?;
-        poll.registry()
-            .register(&mut socket, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
-        let waker = Arc::new(Waker::new(poll.registry(), WAKE)?);
-        shared
-            .wakers
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(waker);
+        let socket = UdpSocket::from_std(shared.connect(config.server())?)?;
+        let stop_updates = shared.stop_updates.subscribe();
         let stats = RunStats::new()?;
         let pending = HashMap::with_capacity(concurrency);
         let deadlines = VecDeque::with_capacity(concurrency);
-        let events = Events::with_capacity(8);
         let query_buffer = Vec::with_capacity(12 + 255 + 4);
         let receive_buffer = vec![0; 65_535];
         let started = Instant::now();
@@ -140,8 +129,7 @@ impl<'a> Engine<'a> {
             shared,
             concurrency,
             socket,
-            poll,
-            events,
+            stop_updates,
             pending,
             deadlines,
             next_id: 0,
@@ -157,7 +145,7 @@ impl<'a> Engine<'a> {
         })
     }
 
-    fn step(&mut self) -> Result<bool, BenchmarkError> {
+    async fn step(&mut self) -> Result<bool, BenchmarkError> {
         if self.stop_reason.is_none()
             && let Some(reason) = self.shared.stop_reason()
         {
@@ -175,13 +163,7 @@ impl<'a> Engine<'a> {
             && self.pending.is_empty()
             && self.stop_reason.is_none()
         {
-            let mut replacement = self.shared.connect(self.config.server())?;
-            self.poll.registry().deregister(&mut self.socket)?;
-            self.poll.registry().register(
-                &mut replacement,
-                SOCKET,
-                Interest::READABLE | Interest::WRITABLE,
-            )?;
+            let replacement = UdpSocket::from_std(self.shared.connect(self.config.server())?)?;
             self.socket = replacement;
             self.next_id = 0;
             self.deadlines.clear();
@@ -193,7 +175,7 @@ impl<'a> Engine<'a> {
         if self.stop_reason.is_some() && self.pending.is_empty() {
             return Ok(false);
         }
-        // A bounded batch yields to deadlines without losing edge-triggered readiness.
+        // Continue draining a full batch before waiting for readiness again.
         if sent_batch == BATCH_SIZE
             || receive_limit_reached
             || (self.stop_reason.is_none()
@@ -221,17 +203,25 @@ impl<'a> Engine<'a> {
                 wake_at = Some(wake_at.map_or(deadline, |current| current.min(deadline)));
             }
         }
-        let timeout = wake_at.map(|time| time.saturating_duration_since(Instant::now()));
-        match self.poll.poll(&mut self.events, timeout) {
-            Ok(()) => {
-                for event in &self.events {
-                    if event.token() == SOCKET && event.is_writable() {
-                        self.writable = true;
-                    }
+        let interest = if self.writable || self.stop_reason.is_some() {
+            Interest::READABLE
+        } else {
+            Interest::READABLE | Interest::WRITABLE
+        };
+        let deadline = async {
+            match wake_at {
+                Some(time) => tokio::time::sleep_until(time.into()).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            result = self.socket.ready(interest) => {
+                if result?.is_writable() {
+                    self.writable = true;
                 }
             }
-            Err(error) if error.kind() == ErrorKind::Interrupted => {}
-            Err(error) => return Err(error.into()),
+            _ = deadline => {}
+            _ = self.stop_updates.changed(), if self.stop_reason.is_none() => {}
         }
         Ok(true)
     }
@@ -301,7 +291,7 @@ impl<'a> Engine<'a> {
                 self.stop_reason = Some(StopReason::Duration);
                 break;
             }
-            match self.socket.send(&self.query_buffer) {
+            match self.socket.try_send(&self.query_buffer) {
                 Ok(length) if length == self.query_buffer.len() => {
                     self.pending.insert(
                         id,
@@ -337,7 +327,7 @@ impl<'a> Engine<'a> {
 
     fn receive_batch(&mut self) -> Result<bool, BenchmarkError> {
         for _ in 0..BATCH_SIZE {
-            let length = match self.socket.recv(&mut self.receive_buffer) {
+            let length = match self.socket.try_recv(&mut self.receive_buffer) {
                 Ok(length) => length,
                 Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,

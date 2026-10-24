@@ -39,6 +39,7 @@ impl fmt::Display for StopReason {
 
 pub(crate) struct RunReport {
     pub(crate) workers: usize,
+    pub(crate) threads: usize,
     pub(crate) stats: RunStats,
     pub(crate) elapsed: Duration,
     pub(crate) stop_reason: StopReason,
@@ -164,6 +165,7 @@ impl fmt::Display for RunReport {
         };
         writeln!(f, "\nStop: {}", self.stop_reason)?;
         writeln!(f, "Workers: {}", self.workers)?;
+        writeln!(f, "Runtime threads: {}", self.threads)?;
         writeln!(
             f,
             "Measured elapsed: {:.3}s (includes any final query completion)",

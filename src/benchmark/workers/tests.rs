@@ -1,11 +1,12 @@
-use std::{collections::HashMap, net::UdpSocket, num::NonZeroU64};
+use std::{collections::HashMap, net::UdpSocket, num::NonZeroU64, thread};
 
 use super::*;
 use crate::config::{QueryOrder, QueryType, RunConfigInput};
 
 fn setup(
     concurrency: usize,
-    workers: Option<usize>,
+    workers: usize,
+    threads: usize,
     stop: StopCondition,
 ) -> (UdpSocket, RunConfig) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -20,6 +21,7 @@ fn setup(
         domains_path: "domains.txt".into(),
         concurrency,
         workers,
+        threads,
         stop_condition: stop,
         timeout: Duration::from_millis(200),
         default_query_type: QueryType::A,
@@ -33,7 +35,8 @@ fn setup(
 fn workers_share_count_and_concurrency_and_match_identical_ids_on_distinct_sockets() {
     let (socket, config) = setup(
         8,
-        Some(3),
+        3,
+        1,
         StopCondition::QueryCount(NonZeroU64::new(8).unwrap()),
     );
     let handle = thread::spawn(move || {
@@ -85,7 +88,8 @@ fn workers_share_count_and_concurrency_and_match_identical_ids_on_distinct_socke
 fn a_busy_worker_cannot_multiply_the_global_query_budget() {
     let (socket, config) = setup(
         8,
-        Some(4),
+        4,
+        1,
         StopCondition::QueryCount(NonZeroU64::new(1_003).unwrap()),
     );
     let handle = thread::spawn(move || {
@@ -112,11 +116,7 @@ fn a_busy_worker_cannot_multiply_the_global_query_budget() {
 
 #[test]
 fn every_worker_obeys_the_common_duration_and_drains_its_queries() {
-    let (socket, config) = setup(
-        8,
-        Some(3),
-        StopCondition::Duration(Duration::from_millis(60)),
-    );
+    let (socket, config) = setup(8, 3, 1, StopCondition::Duration(Duration::from_millis(60)));
     let report = run(&config, &[DnsName::parse("a.com").unwrap()]).unwrap();
     assert_eq!(report.workers, 3);
     assert_eq!(report.stop_reason, StopReason::Duration);
@@ -139,31 +139,59 @@ fn every_worker_obeys_the_common_duration_and_drains_its_queries() {
 }
 
 #[test]
-fn default_workers_are_bounded_by_cpus_concurrency_and_count() {
+fn workers_and_runtime_threads_are_independent_of_query_count() {
     let (_socket, config) = setup(
         64,
-        None,
+        8,
+        2,
         StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
     );
-    assert_eq!(
-        worker_count(&config),
-        thread::available_parallelism()
-            .map_or(1, |count| count.get())
-            .min(2)
-    );
-    let (_socket, config) = setup(
-        64,
-        Some(8),
-        StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
-    );
-    assert_eq!(worker_count(&config), 2);
+    assert_eq!(config.workers().get(), 8);
+    assert_eq!(config.threads().get(), 2);
+}
+
+#[test]
+fn eight_logical_workers_make_progress_on_one_or_two_runtime_threads() {
+    for threads in [1, 2] {
+        let (socket, config) = setup(
+            8,
+            8,
+            threads,
+            StopCondition::QueryCount(NonZeroU64::new(8).unwrap()),
+        );
+        let server = thread::spawn(move || {
+            let mut packet = [0; 512];
+            let mut batch = Vec::new();
+            let mut ports = std::collections::HashSet::new();
+            for _ in 0..8 {
+                let (length, peer) = socket.recv_from(&mut packet).unwrap();
+                ports.insert(peer.port());
+                let mut response = packet[..length].to_vec();
+                response[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+                batch.push((response, peer));
+            }
+            assert_eq!(ports.len(), 8);
+            for (response, peer) in batch.into_iter().rev() {
+                socket.send_to(&response, peer).unwrap();
+            }
+        });
+        let report = run(&config, &[DnsName::parse("a.com").unwrap()]).unwrap();
+        server.join().unwrap();
+        assert_eq!(report.workers, 8);
+        assert_eq!(report.threads, threads);
+        assert_eq!(report.stats.attempted, 8);
+        assert_eq!(report.stats.sent, 8);
+        assert_eq!(report.stats.responses, 8);
+        assert_eq!(report.stats.timeouts, 0);
+    }
 }
 
 #[test]
 fn query_reservations_are_unique_under_contention() {
     let (_socket, config) = setup(
         8,
-        Some(4),
+        4,
+        1,
         StopCondition::QueryCount(NonZeroU64::new(1_003).unwrap()),
     );
     let shared = Shared::new(&config);
@@ -194,7 +222,8 @@ fn query_reservations_are_unique_under_contention() {
 fn source_port_history_outlives_individual_worker_sockets() {
     let (_server, config) = setup(
         8,
-        Some(4),
+        4,
+        1,
         StopCondition::QueryCount(NonZeroU64::new(8).unwrap()),
     );
     let shared = Shared::new(&config);
@@ -215,7 +244,8 @@ fn source_port_history_outlives_individual_worker_sockets() {
 fn socket_failure_stops_the_entire_pool_and_preserves_sent_accounting() {
     let (socket, config) = setup(
         8,
-        Some(4),
+        4,
+        1,
         StopCondition::QueryCount(NonZeroU64::new(1_003).unwrap()),
     );
     drop(socket);

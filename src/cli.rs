@@ -32,9 +32,13 @@ pub struct Cli {
     #[arg(long, default_value_t = 1)]
     concurrency: usize,
 
-    /// Maximum worker threads; defaults to available CPUs, bounded by concurrency and query count
-    #[arg(long, value_name = "COUNT")]
-    workers: Option<usize>,
+    /// Number of logical DNS workers, each owning a socket and histogram
+    #[arg(long, default_value_t = 1, value_name = "COUNT")]
+    workers: usize,
+
+    /// Number of Tokio runtime threads executing the logical workers
+    #[arg(long, default_value_t = 1, value_name = "COUNT")]
+    threads: usize,
 
     /// How long to send queries (integer followed by ns, us, ms, s, m, or h)
     #[arg(long, value_name = "TIME", value_parser = parse_duration)]
@@ -92,6 +96,7 @@ impl Cli {
             domains_path: self.domains,
             concurrency: self.concurrency,
             workers: self.workers,
+            threads: self.threads,
             stop_condition,
             timeout: self.timeout,
             default_query_type: self.query_type,
@@ -223,12 +228,44 @@ mod tests {
             .into_config()
             .unwrap();
         assert_eq!(config.concurrency().get(), 1);
+        assert_eq!(config.workers().get(), 1);
+        assert_eq!(config.threads().get(), 1);
         assert_eq!(config.timeout(), Duration::from_secs(2));
         assert_eq!(config.order(), QueryOrder::Sequential);
         assert_eq!(
             config.stop_condition(),
             StopCondition::Duration(Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn concurrency_does_not_increase_default_workers_or_threads() {
+        let config = parse(&["--duration", "30s", "--concurrency", "64"])
+            .unwrap()
+            .into_config()
+            .unwrap();
+        assert_eq!(config.workers().get(), 1);
+        assert_eq!(config.threads().get(), 1);
+    }
+
+    #[test]
+    fn parses_independent_worker_and_thread_counts() {
+        let config = parse(&[
+            "--queries",
+            "100",
+            "--concurrency",
+            "64",
+            "--workers",
+            "8",
+            "--threads",
+            "2",
+        ])
+        .unwrap()
+        .into_config()
+        .unwrap();
+        assert_eq!(config.concurrency().get(), 64);
+        assert_eq!(config.workers().get(), 8);
+        assert_eq!(config.threads().get(), 2);
     }
 
     #[test]

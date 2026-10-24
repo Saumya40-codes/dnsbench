@@ -39,8 +39,8 @@ pub(crate) enum BenchmarkError {
     SourcePortsExhausted,
     #[error("unable to merge latency histograms: {0}")]
     HistogramMerge(#[from] hdrhistogram::AdditionError),
-    #[error("benchmark worker panicked")]
-    WorkerPanicked,
+    #[error("benchmark worker failed: {0}")]
+    Worker(#[from] tokio::task::JoinError),
     #[error("query sequence exceeds the supported counter range")]
     QueryCounterRange,
 }
@@ -49,12 +49,7 @@ pub(crate) fn run(
     config: &RunConfig,
     domains: &mut [DnsName],
 ) -> Result<RunReport, BenchmarkError> {
-    if config
-        .concurrency()
-        .get()
-        .div_ceil(workers::worker_count(config))
-        > usize::from(u16::MAX) + 1
-    {
+    if config.concurrency().get().div_ceil(config.workers().get()) > usize::from(u16::MAX) + 1 {
         return Err(BenchmarkError::UnsupportedConcurrency);
     }
     if domains.is_empty() {
@@ -91,7 +86,7 @@ pub(crate) fn run(
         }
     }
 
-    if config.concurrency().get() > 1 {
+    if config.concurrency().get() > 1 || config.threads().get() > 1 {
         return workers::run(config, domains);
     }
 
@@ -177,6 +172,7 @@ pub(crate) fn run(
 
     Ok(RunReport {
         workers: 1,
+        threads: 1,
         stats,
         elapsed: started.elapsed(),
         stop_reason,

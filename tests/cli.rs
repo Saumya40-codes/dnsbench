@@ -55,6 +55,8 @@ fn cli_executes_queries_and_separates_answer_and_error_populations() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Loaded domains: 2"));
     assert!(text.contains("Concurrency: 1"));
+    assert!(text.contains("Workers: 1"));
+    assert!(text.contains("Runtime threads: 1"));
     assert!(text.contains("Seed: 42"));
     assert!(text.contains("Attempted: 3 | Sent: 3 | Responses: 3"));
     assert!(text.contains("NOERROR(0)=2 NXDOMAIN(3)=1"));
@@ -133,6 +135,7 @@ fn cli_executes_concurrent_queries_and_reports_peak_in_flight() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Concurrency: 3"));
     assert!(text.contains("Workers: 3"));
+    assert!(text.contains("Runtime threads: 1"));
     assert!(text.contains("Attempted: 3 | Sent: 3 | Responses: 3"));
     let peak: usize = text
         .lines()

@@ -22,7 +22,8 @@ fn setup(concurrency: usize, stop: StopCondition, timeout: Duration) -> (UdpSock
         server: socket.local_addr().unwrap(),
         domains_path: "domains.txt".into(),
         concurrency,
-        workers: Some(1),
+        workers: 1,
+        threads: 1,
         stop_condition: stop,
         timeout,
         default_query_type: QueryType::A,
@@ -222,16 +223,22 @@ fn late_reply_does_not_complete_a_different_pending_query() {
     assert_eq!(report.stats.rejected.mismatched, 1);
 }
 
-#[test]
-fn slow_first_query_does_not_retain_completed_id_history() {
+#[tokio::test]
+async fn slow_first_query_does_not_retain_completed_id_history() {
     let (_socket, config) = setup(
         2,
         StopCondition::QueryCount(NonZeroU64::new(1_000).unwrap()),
         Duration::from_secs(60),
     );
     let domains = names();
-    let shared = Shared::new(&config);
-    let mut engine = Engine::new(&config, &domains, &shared, config.concurrency().get()).unwrap();
+    let shared = Arc::new(Shared::new(&config));
+    let mut engine = Engine::new(
+        Arc::new(config.clone()),
+        Arc::from(domains),
+        Arc::clone(&shared),
+        config.concurrency().get(),
+    )
+    .unwrap();
     for id in [0, 999] {
         engine.pending.insert(
             id,
@@ -247,16 +254,22 @@ fn slow_first_query_does_not_retain_completed_id_history() {
     assert_eq!(engine.pending.len(), 2);
 }
 
-#[test]
-fn blocked_send_has_a_deadline_and_does_not_cancel_sent_queries() {
+#[tokio::test]
+async fn blocked_send_has_a_deadline_and_does_not_cancel_sent_queries() {
     let (_socket, config) = setup(
         2,
         StopCondition::QueryCount(NonZeroU64::new(3).unwrap()),
         Duration::from_millis(80),
     );
     let domains = names();
-    let shared = Shared::new(&config);
-    let mut engine = Engine::new(&config, &domains, &shared, config.concurrency().get()).unwrap();
+    let shared = Arc::new(Shared::new(&config));
+    let mut engine = Engine::new(
+        Arc::new(config.clone()),
+        Arc::from(domains),
+        Arc::clone(&shared),
+        config.concurrency().get(),
+    )
+    .unwrap();
     engine.pending.insert(
         0,
         PendingQuery {
@@ -273,27 +286,85 @@ fn blocked_send_has_a_deadline_and_does_not_cancel_sent_queries() {
     assert_eq!(engine.pending.len(), 1);
     assert_eq!(engine.stats.sent, 0);
     assert_eq!(engine.stats.timeouts, 1);
-    while engine.step().unwrap() {}
+    while engine.step().await.unwrap() {}
     assert_eq!(engine.stats.sent, 1);
     assert_eq!(engine.stats.attempted, 2);
     assert_eq!(engine.stats.timeouts, 2);
 }
 
-#[test]
-fn a_write_readiness_event_resumes_a_blocked_sender() {
+#[tokio::test]
+async fn a_write_readiness_event_resumes_a_blocked_sender() {
     let (_socket, config) = setup(
         2,
         StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
         Duration::from_secs(2),
     );
     let domains = names();
-    let shared = Shared::new(&config);
-    let mut engine = Engine::new(&config, &domains, &shared, config.concurrency().get()).unwrap();
+    let shared = Arc::new(Shared::new(&config));
+    let mut engine = Engine::new(
+        Arc::new(config.clone()),
+        Arc::from(domains),
+        Arc::clone(&shared),
+        config.concurrency().get(),
+    )
+    .unwrap();
     engine.writable = false;
     engine.send_started = Some(Instant::now());
-    assert!(engine.step().unwrap());
+    assert!(engine.step().await.unwrap());
     assert!(engine.writable);
     assert_eq!(engine.stats.sent, 0);
+}
+
+#[tokio::test]
+async fn cancellation_wakes_a_worker_waiting_on_a_long_query_deadline() {
+    let (_socket, config) = setup(
+        2,
+        StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
+        Duration::from_secs(60),
+    );
+    let shared = Arc::new(Shared::new(&config));
+    let mut engine =
+        Engine::new(Arc::new(config), Arc::from(names()), Arc::clone(&shared), 2).unwrap();
+    for id in [0, 1] {
+        engine.pending.insert(
+            id,
+            PendingQuery {
+                domain_index: 0,
+                sent_at: Instant::now(),
+            },
+        );
+        engine.deadlines.push_back(id);
+    }
+    shared.in_flight.store(2, Ordering::Relaxed);
+    let cancellation = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        shared.cancel(StopReason::SocketError);
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), engine.step())
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    cancellation.await.unwrap();
+    assert_eq!(engine.shared.stop_reason(), Some(StopReason::SocketError));
+    assert_eq!(engine.pending.len(), 2);
+    assert_eq!(engine.stats.timeouts, 0);
+}
+
+#[tokio::test]
+async fn a_worker_sees_cancellation_that_happened_before_it_subscribed() {
+    let (_socket, config) = setup(
+        2,
+        StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
+        Duration::from_secs(60),
+    );
+    let shared = Arc::new(Shared::new(&config));
+    shared.cancel(StopReason::SocketError);
+    let mut engine = Engine::new(Arc::new(config), Arc::from(names()), shared, 2).unwrap();
+    assert!(!engine.step().await.unwrap());
+    assert_eq!(engine.stop_reason, Some(StopReason::SocketError));
+    assert!(engine.pending.is_empty());
 }
 
 #[test]
@@ -317,7 +388,8 @@ fn concurrent_aaaa_queries_work_over_ipv6() {
         server: socket.local_addr().unwrap(),
         domains_path: "domains.txt".into(),
         concurrency: 2,
-        workers: None,
+        workers: 1,
+        threads: 1,
         stop_condition: StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
         timeout: Duration::from_secs(2),
         default_query_type: QueryType::Aaaa,

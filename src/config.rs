@@ -30,19 +30,21 @@ pub struct RunConfigInput {
     pub server: SocketAddr,
     pub domains_path: PathBuf,
     pub concurrency: usize,
-    pub workers: Option<usize>,
+    pub workers: usize,
+    pub threads: usize,
     pub stop_condition: StopCondition,
     pub timeout: Duration,
     pub default_query_type: QueryType,
     pub order: QueryOrder,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RunConfig {
     server: SocketAddr,
     domains_path: PathBuf,
     concurrency: NonZeroUsize,
-    workers: Option<NonZeroUsize>,
+    workers: NonZeroUsize,
+    threads: NonZeroUsize,
     stop_condition: StopCondition,
     timeout: Duration,
     default_query_type: QueryType,
@@ -65,6 +67,9 @@ pub enum ConfigError {
 
     #[error("worker count must be greater than zero")]
     ZeroWorkers,
+
+    #[error("runtime thread count must be greater than zero")]
+    ZeroThreads,
 
     #[error("worker count must not exceed concurrency")]
     TooManyWorkers,
@@ -94,11 +99,9 @@ impl TryFrom<RunConfigInput> for RunConfig {
 
         let concurrency =
             NonZeroUsize::new(value.concurrency).ok_or(ConfigError::ZeroConcurrency)?;
-        let workers = value
-            .workers
-            .map(|count| NonZeroUsize::new(count).ok_or(ConfigError::ZeroWorkers))
-            .transpose()?;
-        if workers.is_some_and(|count| count.get() > concurrency.get()) {
+        let workers = NonZeroUsize::new(value.workers).ok_or(ConfigError::ZeroWorkers)?;
+        let threads = NonZeroUsize::new(value.threads).ok_or(ConfigError::ZeroThreads)?;
+        if workers.get() > concurrency.get() {
             return Err(ConfigError::TooManyWorkers);
         }
 
@@ -117,6 +120,7 @@ impl TryFrom<RunConfigInput> for RunConfig {
             domains_path: value.domains_path,
             concurrency,
             workers,
+            threads,
             stop_condition: value.stop_condition,
             timeout: value.timeout,
             default_query_type: value.default_query_type,
@@ -138,8 +142,12 @@ impl RunConfig {
         self.concurrency
     }
 
-    pub fn workers(&self) -> Option<NonZeroUsize> {
+    pub fn workers(&self) -> NonZeroUsize {
         self.workers
+    }
+
+    pub fn threads(&self) -> NonZeroUsize {
+        self.threads
     }
 
     pub fn stop_condition(&self) -> StopCondition {
@@ -168,7 +176,8 @@ mod tests {
             server: SocketAddr::from(([127, 0, 0, 1], 53)),
             domains_path: PathBuf::from("domains.txt"),
             concurrency: 64,
-            workers: None,
+            workers: 1,
+            threads: 1,
             stop_condition: StopCondition::Duration(Duration::from_secs(30)),
             timeout: Duration::from_secs(2),
             default_query_type: QueryType::A,
@@ -201,22 +210,29 @@ mod tests {
     #[test]
     fn validates_explicit_worker_limits() {
         let mut input = valid_input();
-        input.workers = Some(0);
+        input.workers = 0;
         assert_eq!(
             RunConfig::try_from(input).unwrap_err(),
             ConfigError::ZeroWorkers
         );
         let mut input = valid_input();
-        input.workers = Some(input.concurrency + 1);
+        input.workers = input.concurrency + 1;
         assert_eq!(
             RunConfig::try_from(input).unwrap_err(),
             ConfigError::TooManyWorkers
         );
         let mut input = valid_input();
-        input.workers = Some(4);
+        input.workers = 4;
+        assert_eq!(RunConfig::try_from(input).unwrap().workers().get(), 4);
+    }
+
+    #[test]
+    fn rejects_zero_runtime_threads() {
+        let mut input = valid_input();
+        input.threads = 0;
         assert_eq!(
-            RunConfig::try_from(input).unwrap().workers().unwrap().get(),
-            4
+            RunConfig::try_from(input).unwrap_err(),
+            ConfigError::ZeroThreads
         );
     }
 

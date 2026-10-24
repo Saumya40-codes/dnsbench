@@ -1,16 +1,14 @@
 use std::{
     io,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    panic::{AssertUnwindSafe, catch_unwind},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Mutex,
         atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
-    thread,
     time::{Duration, Instant},
 };
 
-use mio::{Waker, net::UdpSocket};
+use tokio::{runtime::Builder, sync::watch, task::JoinSet};
 
 use crate::{
     config::{RunConfig, StopCondition},
@@ -23,12 +21,10 @@ pub(super) struct Shared {
     next_query: AtomicU64,
     count: Option<u64>,
     stopped: AtomicU8,
+    pub(super) stop_updates: watch::Sender<()>,
     pub(super) in_flight: AtomicUsize,
     pub(super) peak_in_flight: AtomicUsize,
     used_ports: Mutex<[u64; 1024]>,
-    pub(super) wakers: Mutex<Vec<Arc<Waker>>>,
-    started: Mutex<Option<Instant>>,
-    start_ready: Condvar,
 }
 
 impl Shared {
@@ -40,12 +36,10 @@ impl Shared {
                 StopCondition::Duration(_) => None,
             },
             stopped: AtomicU8::new(0),
+            stop_updates: watch::channel(()).0,
             in_flight: AtomicUsize::new(0),
             peak_in_flight: AtomicUsize::new(0),
             used_ports: Mutex::new([0; 1024]),
-            wakers: Mutex::new(Vec::new()),
-            started: Mutex::new(None),
-            start_ready: Condvar::new(),
         }
     }
 
@@ -89,14 +83,7 @@ impl Shared {
             2
         };
         self.stopped.fetch_max(code, Ordering::Release);
-        for waker in self
-            .wakers
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .iter()
-        {
-            let _ = waker.wake();
-        }
+        self.stop_updates.send_replace(());
     }
 
     pub(super) fn stop_reason(&self) -> Option<StopReason> {
@@ -106,42 +93,10 @@ impl Shared {
             _ => Some(StopReason::SocketError),
         }
     }
-
-    fn wait_for_start(&self) -> Instant {
-        let started = self
-            .started
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let started = self
-            .start_ready
-            .wait_while(started, |time| time.is_none())
-            .unwrap_or_else(|error| error.into_inner());
-        started.expect("coordinator releases workers with a start time")
-    }
-
-    fn start(&self) {
-        *self
-            .started
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(Instant::now());
-        self.start_ready.notify_all();
-    }
-}
-
-pub(super) fn worker_count(config: &RunConfig) -> usize {
-    let requested = config.workers().map_or_else(
-        || thread::available_parallelism().map_or(1, |count| count.get()),
-        |count| count.get(),
-    );
-    let count_limit = match config.stop_condition() {
-        StopCondition::QueryCount(count) => usize::try_from(count.get()).unwrap_or(usize::MAX),
-        StopCondition::Duration(_) => usize::MAX,
-    };
-    requested.min(config.concurrency().get()).min(count_limit)
 }
 
 pub(super) fn run(config: &RunConfig, domains: &[DnsName]) -> Result<RunReport, BenchmarkError> {
-    run_with_workers(config, domains, worker_count(config))
+    run_with_workers(config, domains, config.workers().get())
 }
 
 pub(super) fn run_with_workers(
@@ -149,44 +104,55 @@ pub(super) fn run_with_workers(
     domains: &[DnsName],
     workers: usize,
 ) -> Result<RunReport, BenchmarkError> {
-    let shared = Shared::new(config);
-    let mut stats = RunStats::new()?;
-    let mut engines = Vec::with_capacity(workers);
-    for index in 0..workers {
-        let quota = config.concurrency().get() / workers
-            + usize::from(index < config.concurrency().get() % workers);
-        engines.push(Engine::new(config, domains, &shared, quota)?);
-    }
-
-    thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(workers);
-        let mut first_error = None;
-        for (index, engine) in engines.into_iter().enumerate() {
-            let shared = &shared;
-            let handle = thread::Builder::new()
-                .name(format!("dnsbench-{index}"))
-                .spawn_scoped(scope, move || {
-                    let result =
-                        catch_unwind(AssertUnwindSafe(|| engine.run(shared.wait_for_start())))
-                            .unwrap_or(Err(BenchmarkError::WorkerPanicked));
-                    if result.is_err() {
-                        shared.cancel(StopReason::SocketError);
-                    }
-                    result
-                });
-            match handle {
-                Ok(handle) => handles.push(handle),
-                Err(error) => {
-                    shared.cancel(StopReason::SocketError);
-                    first_error = Some(BenchmarkError::Io(error));
-                    break;
-                }
-            }
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(config.threads().get())
+        .thread_name("dnsbench-runtime")
+        .enable_all()
+        .build()?;
+    let threads = runtime.metrics().num_workers();
+    let config = Arc::new(config.clone());
+    let domains: Arc<[DnsName]> = Arc::from(domains);
+    runtime.block_on(async move {
+        let shared = Arc::new(Shared::new(&config));
+        let mut stats = RunStats::new()?;
+        let mut engines = Vec::with_capacity(workers);
+        for index in 0..workers {
+            let quota = config.concurrency().get() / workers
+                + usize::from(index < config.concurrency().get() % workers);
+            engines.push(Engine::new(
+                Arc::clone(&config),
+                Arc::clone(&domains),
+                Arc::clone(&shared),
+                quota,
+            )?);
         }
-        shared.start();
+
+        let (start, ready) = watch::channel(None);
+        let mut tasks = JoinSet::new();
+        for engine in engines {
+            let shared = Arc::clone(&shared);
+            let mut ready = ready.clone();
+            tasks.spawn(async move {
+                let started = (*ready
+                    .wait_for(|time| time.is_some())
+                    .await
+                    .expect("coordinator retains start sender"))
+                .expect("coordinator supplies start time");
+                let result = engine.run(started).await;
+                if result.is_err() {
+                    shared.cancel(StopReason::SocketError);
+                }
+                result
+            });
+        }
+        start.send_replace(Some(Instant::now()));
+        let mut first_error = None;
         let mut elapsed = Duration::ZERO;
-        for handle in handles {
-            match handle.join().unwrap_or(Err(BenchmarkError::WorkerPanicked)) {
+        while let Some(result) = tasks.join_next().await {
+            match result
+                .map_err(BenchmarkError::Worker)
+                .and_then(|result| result)
+            {
                 Ok(report) => {
                     elapsed = elapsed.max(report.elapsed);
                     if let Err(error) = stats.merge(report.stats) {
@@ -212,6 +178,7 @@ pub(super) fn run_with_workers(
             });
         Ok(RunReport {
             workers,
+            threads,
             stats,
             elapsed,
             stop_reason,
@@ -226,6 +193,7 @@ fn connect(server: SocketAddr) -> io::Result<UdpSocket> {
     };
     let socket = UdpSocket::bind(local)?;
     socket.connect(server)?;
+    socket.set_nonblocking(true)?;
     Ok(socket)
 }
 
