@@ -15,6 +15,7 @@ pub enum QueryType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopCondition {
+    Once,
     Duration(Duration),
     QueryCount(NonZeroU64),
 }
@@ -29,18 +30,22 @@ pub enum QueryOrder {
 pub struct RunConfigInput {
     pub server: SocketAddr,
     pub domains_path: PathBuf,
-    pub concurrency: usize,
+    pub max_in_flight: usize,
+    pub workers: usize,
+    pub threads: usize,
     pub stop_condition: StopCondition,
     pub timeout: Duration,
     pub default_query_type: QueryType,
     pub order: QueryOrder,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RunConfig {
     server: SocketAddr,
     domains_path: PathBuf,
-    concurrency: NonZeroUsize,
+    max_in_flight: NonZeroUsize,
+    workers: NonZeroUsize,
+    threads: NonZeroUsize,
     stop_condition: StopCondition,
     timeout: Duration,
     default_query_type: QueryType,
@@ -58,8 +63,17 @@ pub enum ConfigError {
     #[error("domains file path must not be empty")]
     EmptyDomainsPath,
 
-    #[error("concurrency must be greater than zero")]
-    ZeroConcurrency,
+    #[error("max-in-flight must be greater than zero")]
+    ZeroMaxInFlight,
+
+    #[error("worker count must be greater than zero")]
+    ZeroWorkers,
+
+    #[error("runtime thread count must be greater than zero")]
+    ZeroThreads,
+
+    #[error("--max-in-flight must be at least the worker count")]
+    TooManyWorkers,
 
     #[error("benchmark duration must be greater than zero")]
     ZeroDuration,
@@ -84,8 +98,13 @@ impl TryFrom<RunConfigInput> for RunConfig {
             return Err(ConfigError::EmptyDomainsPath);
         }
 
-        let concurrency =
-            NonZeroUsize::new(value.concurrency).ok_or(ConfigError::ZeroConcurrency)?;
+        let max_in_flight =
+            NonZeroUsize::new(value.max_in_flight).ok_or(ConfigError::ZeroMaxInFlight)?;
+        let workers = NonZeroUsize::new(value.workers).ok_or(ConfigError::ZeroWorkers)?;
+        let threads = NonZeroUsize::new(value.threads).ok_or(ConfigError::ZeroThreads)?;
+        if workers.get() > max_in_flight.get() {
+            return Err(ConfigError::TooManyWorkers);
+        }
 
         if let StopCondition::Duration(duration) = value.stop_condition
             && duration.is_zero()
@@ -100,7 +119,9 @@ impl TryFrom<RunConfigInput> for RunConfig {
         Ok(Self {
             server: value.server,
             domains_path: value.domains_path,
-            concurrency,
+            max_in_flight,
+            workers,
+            threads,
             stop_condition: value.stop_condition,
             timeout: value.timeout,
             default_query_type: value.default_query_type,
@@ -118,8 +139,16 @@ impl RunConfig {
         &self.domains_path
     }
 
-    pub fn concurrency(&self) -> NonZeroUsize {
-        self.concurrency
+    pub fn max_in_flight(&self) -> NonZeroUsize {
+        self.max_in_flight
+    }
+
+    pub fn workers(&self) -> NonZeroUsize {
+        self.workers
+    }
+
+    pub fn threads(&self) -> NonZeroUsize {
+        self.threads
     }
 
     pub fn stop_condition(&self) -> StopCondition {
@@ -147,7 +176,9 @@ mod tests {
         RunConfigInput {
             server: SocketAddr::from(([127, 0, 0, 1], 53)),
             domains_path: PathBuf::from("domains.txt"),
-            concurrency: 64,
+            max_in_flight: 64,
+            workers: 1,
+            threads: 1,
             stop_condition: StopCondition::Duration(Duration::from_secs(30)),
             timeout: Duration::from_secs(2),
             default_query_type: QueryType::A,
@@ -156,13 +187,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_concurrency() {
+    fn rejects_zero_max_in_flight() {
         let mut input = valid_input();
-        input.concurrency = 0;
+        input.max_in_flight = 0;
 
         assert_eq!(
             RunConfig::try_from(input).unwrap_err(),
-            ConfigError::ZeroConcurrency,
+            ConfigError::ZeroMaxInFlight,
         );
     }
 
@@ -174,6 +205,35 @@ mod tests {
         assert_eq!(
             RunConfig::try_from(input).unwrap_err(),
             ConfigError::ZeroDuration,
+        );
+    }
+
+    #[test]
+    fn validates_explicit_worker_limits() {
+        let mut input = valid_input();
+        input.workers = 0;
+        assert_eq!(
+            RunConfig::try_from(input).unwrap_err(),
+            ConfigError::ZeroWorkers
+        );
+        let mut input = valid_input();
+        input.workers = input.max_in_flight + 1;
+        assert_eq!(
+            RunConfig::try_from(input).unwrap_err(),
+            ConfigError::TooManyWorkers
+        );
+        let mut input = valid_input();
+        input.workers = 4;
+        assert_eq!(RunConfig::try_from(input).unwrap().workers().get(), 4);
+    }
+
+    #[test]
+    fn rejects_zero_runtime_threads() {
+        let mut input = valid_input();
+        input.threads = 0;
+        assert_eq!(
+            RunConfig::try_from(input).unwrap_err(),
+            ConfigError::ZeroThreads
         );
     }
 

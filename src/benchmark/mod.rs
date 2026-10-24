@@ -1,6 +1,7 @@
 mod concurrent;
 mod input;
 mod results;
+mod workers;
 
 pub(crate) use input::load_domains;
 
@@ -20,8 +21,8 @@ use results::{RunReport, RunStats};
 
 #[derive(Debug, Error)]
 pub(crate) enum BenchmarkError {
-    #[error("concurrency must not exceed 65536 queries on one socket")]
-    UnsupportedConcurrency,
+    #[error("max-in-flight must not exceed 65536 queries per worker")]
+    UnsupportedInFlightLimit,
     #[error("the workload contains no domains")]
     EmptyWorkload,
     #[error("duration or timeout exceeds the clock's range")]
@@ -36,14 +37,25 @@ pub(crate) enum BenchmarkError {
     LatencyRange,
     #[error("unable to allocate a fresh source port for transaction ID reuse")]
     SourcePortsExhausted,
+    #[error("unable to merge latency histograms: {0}")]
+    HistogramMerge(#[from] hdrhistogram::AdditionError),
+    #[error("benchmark worker failed: {0}")]
+    Worker(#[from] tokio::task::JoinError),
+    #[error("query sequence exceeds the supported counter range")]
+    QueryCounterRange,
 }
 
 pub(crate) fn run(
     config: &RunConfig,
     domains: &mut [DnsName],
 ) -> Result<RunReport, BenchmarkError> {
-    if config.concurrency().get() > usize::from(u16::MAX) + 1 {
-        return Err(BenchmarkError::UnsupportedConcurrency);
+    if config
+        .max_in_flight()
+        .get()
+        .div_ceil(config.workers().get())
+        > usize::from(u16::MAX) + 1
+    {
+        return Err(BenchmarkError::UnsupportedInFlightLimit);
     }
     if domains.is_empty() {
         return Err(BenchmarkError::EmptyWorkload);
@@ -79,8 +91,8 @@ pub(crate) fn run(
         }
     }
 
-    if config.concurrency().get() > 1 {
-        return concurrent::run(config, domains);
+    if config.max_in_flight().get() > 1 || config.threads().get() > 1 {
+        return workers::run(config, domains);
     }
 
     let mut client = UdpClient::connect(config.server())?;
@@ -91,13 +103,18 @@ pub(crate) fn run(
     let mut next_id = 0u32;
     let mut domain_index = 0;
     let started = Instant::now();
+    let query_limit = match config.stop_condition() {
+        StopCondition::Once => Some(domains.len() as u64),
+        StopCondition::QueryCount(count) => Some(count.get()),
+        StopCondition::Duration(_) => None,
+    };
     let deadline = match config.stop_condition() {
         StopCondition::Duration(duration) => Some(
             started
                 .checked_add(duration)
                 .ok_or(BenchmarkError::ClockRange)?,
         ),
-        StopCondition::QueryCount(_) => None,
+        StopCondition::Once | StopCondition::QueryCount(_) => None,
     };
 
     let stop_reason = loop {
@@ -106,10 +123,11 @@ pub(crate) fn run(
         {
             break StopReason::Duration;
         }
-        if let StopCondition::QueryCount(count) = config.stop_condition()
-            && stats.sent >= count.get()
-        {
-            break StopReason::QueryCount;
+        if query_limit.is_some_and(|count| stats.sent >= count) {
+            break match config.stop_condition() {
+                StopCondition::Once => StopReason::WorkloadCompleted,
+                _ => StopReason::QueryCount,
+            };
         }
 
         if next_id > u32::from(u16::MAX) {
@@ -164,6 +182,8 @@ pub(crate) fn run(
     };
 
     Ok(RunReport {
+        workers: 1,
+        threads: 1,
         stats,
         elapsed: started.elapsed(),
         stop_reason,

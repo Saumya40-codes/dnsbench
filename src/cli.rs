@@ -13,9 +13,9 @@ use crate::duration::parse_duration;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Benchmark a DNS server")]
+#[command(after_help = "Without --duration or --queries, each workload entry is queried once.")]
 #[command(group(
     ArgGroup::new("stop")
-    .required(true)
     .multiple(false)
     .args(["duration", "queries"])
 ))]
@@ -28,9 +28,17 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     domains: PathBuf,
 
-    /// Maximum outstanding queries (1..=65536)
-    #[arg(long, default_value_t = 1)]
-    concurrency: usize,
+    /// Maximum outstanding queries across all workers (at most 65536 per worker)
+    #[arg(long, alias = "concurrency", default_value_t = 1)]
+    max_in_flight: usize,
+
+    /// Number of logical DNS workers, each owning a socket and histogram
+    #[arg(long, default_value_t = 1, value_name = "COUNT")]
+    workers: usize,
+
+    /// Number of Tokio runtime threads executing the logical workers
+    #[arg(long, default_value_t = 1, value_name = "COUNT")]
+    threads: usize,
 
     /// How long to send queries (integer followed by ns, us, ms, s, m, or h)
     #[arg(long, value_name = "TIME", value_parser = parse_duration)]
@@ -59,7 +67,7 @@ pub struct Cli {
 
 #[derive(Debug, Error)]
 pub enum CliConfigError {
-    #[error("specify exactly one of --duration or --queries")]
+    #[error("--duration and --queries cannot be used together")]
     InvalidStopCondition,
 
     #[error("--shuffle and --seed must be supplied together")]
@@ -72,6 +80,7 @@ pub enum CliConfigError {
 impl Cli {
     pub fn into_config(self) -> Result<RunConfig, CliConfigError> {
         let stop_condition = match (self.duration, self.queries) {
+            (None, None) => StopCondition::Once,
             (Some(duration), None) => StopCondition::Duration(duration),
             (None, Some(count)) => StopCondition::QueryCount(count),
             _ => return Err(CliConfigError::InvalidStopCondition),
@@ -86,7 +95,9 @@ impl Cli {
         let input = RunConfigInput {
             server: self.server,
             domains_path: self.domains,
-            concurrency: self.concurrency,
+            max_in_flight: self.max_in_flight,
+            workers: self.workers,
+            threads: self.threads,
             stop_condition,
             timeout: self.timeout,
             default_query_type: self.query_type,
@@ -161,10 +172,10 @@ mod tests {
     }
 
     #[test]
-    fn requires_exactly_one_stop_condition() {
+    fn defaults_to_one_pass_and_rejects_conflicting_stop_conditions() {
         assert_eq!(
-            parse(&[]).unwrap_err().kind(),
-            ErrorKind::MissingRequiredArgument
+            parse(&[]).unwrap().into_config().unwrap().stop_condition(),
+            StopCondition::Once
         );
         assert_eq!(
             parse(&["--duration", "30s", "--queries", "100"])
@@ -217,12 +228,58 @@ mod tests {
             .unwrap()
             .into_config()
             .unwrap();
-        assert_eq!(config.concurrency().get(), 1);
+        assert_eq!(config.max_in_flight().get(), 1);
+        assert_eq!(config.workers().get(), 1);
+        assert_eq!(config.threads().get(), 1);
         assert_eq!(config.timeout(), Duration::from_secs(2));
         assert_eq!(config.order(), QueryOrder::Sequential);
         assert_eq!(
             config.stop_condition(),
             StopCondition::Duration(Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn max_in_flight_does_not_increase_default_workers_or_threads() {
+        let config = parse(&["--duration", "30s", "--max-in-flight", "64"])
+            .unwrap()
+            .into_config()
+            .unwrap();
+        assert_eq!(config.workers().get(), 1);
+        assert_eq!(config.threads().get(), 1);
+    }
+
+    #[test]
+    fn parses_independent_worker_and_thread_counts() {
+        let config = parse(&[
+            "--queries",
+            "100",
+            "--max-in-flight",
+            "64",
+            "--workers",
+            "8",
+            "--threads",
+            "2",
+        ])
+        .unwrap()
+        .into_config()
+        .unwrap();
+        assert_eq!(config.max_in_flight().get(), 64);
+        assert_eq!(config.workers().get(), 8);
+        assert_eq!(config.threads().get(), 2);
+    }
+
+    #[test]
+    fn max_in_flight_accepts_the_previous_concurrency_spelling() {
+        for flag in ["--max-in-flight", "--concurrency"] {
+            let config = parse(&[flag, "8"]).unwrap().into_config().unwrap();
+            assert_eq!(config.max_in_flight().get(), 8);
+        }
+        assert_eq!(
+            parse(&["--max-in-flight", "8", "--concurrency", "16"])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ArgumentConflict
         );
     }
 
@@ -235,8 +292,8 @@ mod tests {
                 ConfigError::ZeroTimeout,
             ),
             (
-                vec!["--duration", "30s", "--concurrency", "0"],
-                ConfigError::ZeroConcurrency,
+                vec!["--duration", "30s", "--max-in-flight", "0"],
+                ConfigError::ZeroMaxInFlight,
             ),
         ] {
             assert!(matches!(
