@@ -1,0 +1,71 @@
+# dnsbench
+
+A DNS benchmark CLI written in Rust. Send queries to a DNS server, measure response times, and inspect the slowest domains from your last run.
+
+## Features
+
+- UDP queries for A and AAAA records over IPv4 or IPv6.
+- Configurable workers, runtime threads, query limits, and timeouts.
+- Query each input entry once, send a fixed number of queries, or run for a duration.
+- Latency percentiles, throughput, DNS response codes, timeouts, and socket errors.
+- Reproducible domain shuffling with a seed.
+- Compressed run snapshots and offline inspection of slowest domains and their DNS records.
+
+## Build
+
+Requires a current stable Rust toolchain and a C compiler for the compression dependency.
+
+```sh
+cargo build --release --locked
+```
+
+The executable is `target/release/dns-bench`.
+
+## Usage
+
+Create `domains.txt` with one domain per line. Blank lines and lines starting with `#` are ignored.
+
+```text
+example.com
+rust-lang.org
+```
+
+Query each entry once:
+
+```sh
+./target/release/dns-bench --server 1.1.1.1 --domains domains.txt
+```
+
+Send 10,000 queries with a larger window:
+
+```sh
+./target/release/dns-bench --server 1.1.1.1 --domains domains.txt \
+  --queries 10000 --max-in-flight 128 --workers 4 --threads 2
+```
+
+`--queries` is the total across all domains. Use `--duration 30s` instead to run for a duration. Both modes cycle through the workload. Pending queries finish or time out after sending stops.
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `--max-in-flight` | Total outstanding queries across workers | `2` |
+| `--workers` | Logical workers, each owning a UDP socket | `2` |
+| `--threads` | Tokio runtime threads | `1` |
+| `--timeout` | Per-query timeout | `2s` |
+| `--type` | Query type: `A` or `AAAA` | `A` |
+| `--shuffle --seed 42` | Repeat a seeded permutation of the input | Off |
+
+Workers must not exceed max in flight. Server addresses accept an optional port, defaulting to `53`. Run `--help` for all options.
+
+## Inspect a run
+
+Each run saves a compressed snapshot after measurement finishes. Inspect the two slowest responding domains without sending more queries:
+
+```sh
+./target/release/dns-bench --topk 2
+```
+
+Domains are ranked by their slowest recorded response. Duplicate domain entries are combined, and domains without a response are excluded. `--topk 0` produces no output.
+
+The save location is printed after each run. Use `--results-file PATH` when benchmarking or inspecting to select another snapshot. The default snapshot is replaced by the next run.
+
+Response latency measures the interval from the successful send attempt to receiving a matching response. Validation and reporting follow the receive timestamp. Scheduling and socket queueing can still affect the observed latency.
