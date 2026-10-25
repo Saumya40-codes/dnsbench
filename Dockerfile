@@ -12,6 +12,5 @@ RUN apt-get update \
     && mkdir -p /state
 COPY --from=build /app/target/release/dns-bench /usr/local/bin/dns-bench
 ENV XDG_STATE_HOME=/state
-USER 65532:65532
 ENTRYPOINT ["dns-bench"]
 CMD ["--help"]
