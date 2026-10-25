@@ -93,6 +93,22 @@ The save location is printed after each run. Use `--results-file PATH` when benc
 
 Response latency measures the interval from the successful send attempt to receiving a matching response. Validation and reporting follow the receive timestamp. Scheduling and socket queueing can still affect the observed latency.
 
+## Public resolver comparison
+
+Sample from one Linux host on 2026-10-25: 100 domain names, three 1,000-query runs per provider and query type, 4 workers, 2 threads, and 32 in-flight queries.
+
+Latency pairs are p50 / p99 in milliseconds, each the median of three run-level values for NOERROR responses with answers. Timeouts are totals per 3,000 queries for each type.
+
+| Provider | Server | A p50 / p99 | AAAA p50 / p99 | Timeouts A / AAAA |
+| --- | --- | ---: | ---: | ---: |
+| Cloudflare | `1.1.1.1` | 8.495 / 149.422 | 8.110 / 158.466 | 0 / 2 |
+| Google | `8.8.8.8` | 26.640 / 423.887 | 31.457 / 409.207 | 32 / 30 |
+| Quad9 | `9.9.9.9` | 20.972 / 536.347 | 19.956 / 389.808 | 2 / 7 |
+| OpenDNS | `208.67.222.222` | 16.179 / 437.518 | 15.983 / 329.253 | 5 / 20 |
+| AdGuard unfiltered | `94.140.14.140` | 69.927 / 619.708 | 69.796 / 1043.857 | 81 / 61 |
+
+These are observations from one network, not a global ranking. [Methodology, full results, workload, and reproduction scripts](docs/benchmarks/README.md).
+
 ## Demo
 
 ```sh
