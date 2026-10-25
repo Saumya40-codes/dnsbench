@@ -194,8 +194,8 @@ fn cli_executes_queries_and_separates_answer_and_error_populations() {
     );
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Loaded domains: 2"));
-    assert!(text.contains("Max in flight: 1"));
-    assert!(text.contains("Workers: 1"));
+    assert!(text.contains("Max in flight: 2"));
+    assert!(text.contains("Workers: 2"));
     assert!(text.contains("Runtime threads: 1"));
     assert!(text.contains("Seed: 42"));
     assert!(text.contains("Attempted: 3 | Sent: 3 | Responses: 3"));
@@ -361,7 +361,7 @@ fn cli_prints_partial_results_and_fails_on_socket_error() {
     let output = command(&file)
         .args(["--server", &address.to_string(), "--domains"])
         .arg(&file.0)
-        .args(["--queries", "3"])
+        .args(["--queries", "3", "--workers", "1", "--max-in-flight", "1"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));

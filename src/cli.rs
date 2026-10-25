@@ -40,11 +40,11 @@ pub struct Cli {
     pub(crate) results_file: Option<PathBuf>,
 
     /// Maximum outstanding queries across all workers (at most 65536 per worker)
-    #[arg(long, alias = "concurrency", default_value_t = 1)]
+    #[arg(long, alias = "concurrency", default_value_t = 2)]
     max_in_flight: usize,
 
     /// Number of logical DNS workers, each owning a socket and histogram
-    #[arg(long, default_value_t = 1, value_name = "COUNT")]
+    #[arg(long, default_value_t = 2, value_name = "COUNT")]
     workers: usize,
 
     /// Number of Tokio runtime threads executing the logical workers
@@ -253,8 +253,8 @@ mod tests {
             .unwrap()
             .into_config()
             .unwrap();
-        assert_eq!(config.max_in_flight().get(), 1);
-        assert_eq!(config.workers().get(), 1);
+        assert_eq!(config.max_in_flight().get(), 2);
+        assert_eq!(config.workers().get(), 2);
         assert_eq!(config.threads().get(), 1);
         assert_eq!(config.timeout(), Duration::from_secs(2));
         assert_eq!(config.order(), QueryOrder::Sequential);
@@ -270,7 +270,7 @@ mod tests {
             .unwrap()
             .into_config()
             .unwrap();
-        assert_eq!(config.workers().get(), 1);
+        assert_eq!(config.workers().get(), 2);
         assert_eq!(config.threads().get(), 1);
     }
 
