@@ -1,16 +1,68 @@
 use std::{
+    fmt,
     net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
+    str::FromStr,
     time::Duration,
 };
 
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
 pub enum QueryType {
-    A,
-    Aaaa,
+    A = 1,
+    Ns = 2,
+    Cname = 5,
+    Soa = 6,
+    Ptr = 12,
+    Mx = 15,
+    Txt = 16,
+    Aaaa = 28,
+}
+
+impl QueryType {
+    pub(crate) const ALL: [Self; 8] = [
+        Self::A,
+        Self::Aaaa,
+        Self::Ns,
+        Self::Mx,
+        Self::Txt,
+        Self::Soa,
+        Self::Cname,
+        Self::Ptr,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::Aaaa => "AAAA",
+            Self::Ns => "NS",
+            Self::Mx => "MX",
+            Self::Txt => "TXT",
+            Self::Soa => "SOA",
+            Self::Cname => "CNAME",
+            Self::Ptr => "PTR",
+        }
+    }
+}
+
+impl fmt::Display for QueryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for QueryType {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|query_type| value.eq_ignore_ascii_case(query_type.as_str()))
+            .ok_or("supported query types are A, AAAA, NS, MX, TXT, SOA, CNAME, and PTR")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

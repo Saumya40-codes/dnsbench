@@ -21,6 +21,96 @@ fn command(file: &DomainsFile) -> Command {
 }
 
 #[test]
+fn extended_query_types_roundtrip_through_both_engines_and_saved_inspection() {
+    let mut soa = vec![0xC0, 0x0C, 0xC0, 0x0C];
+    for number in 1u32..=5 {
+        soa.extend_from_slice(&number.to_be_bytes());
+    }
+    let cases = [
+        ("NS", 2u16, vec![0xC0, 0x0C], "IN NS example.com."),
+        ("CNAME", 5, vec![0xC0, 0x0C], "IN CNAME example.com."),
+        ("SOA", 6, soa, "IN SOA example.com. example.com. 1 2 3 4 5"),
+        (
+            "PTR",
+            12,
+            b"\x04host\x07example\x03com\0".to_vec(),
+            "IN PTR host.example.com.",
+        ),
+        ("MX", 15, vec![0, 10, 0xC0, 0x0C], "IN MX 10 example.com."),
+        (
+            "TXT",
+            16,
+            b"\x03one\x03two".to_vec(),
+            "IN TXT \"one\" \"two\"",
+        ),
+    ];
+    for (kind, code, data, expected) in cases {
+        for (workers, threads, window) in [(1, 1, 1), (2, 2, 4)] {
+            let file = DomainsFile::new("record-types");
+            let domain = if kind == "PTR" {
+                "1.2.0.192.in-addr.arpa\n"
+            } else {
+                "example.com\n"
+            };
+            fs::write(&file.0, domain).unwrap();
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let address = socket.local_addr().unwrap();
+            let data = data.clone();
+            let handle = thread::spawn(move || {
+                let mut buffer = [0; 512];
+                let (length, peer) = socket.recv_from(&mut buffer).unwrap();
+                assert_eq!(&buffer[length - 4..length - 2], &code.to_be_bytes());
+                let mut response = buffer[..length].to_vec();
+                response[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+                response[6..8].copy_from_slice(&1u16.to_be_bytes());
+                response.extend_from_slice(&[0xC0, 0x0C]);
+                response.extend_from_slice(&code.to_be_bytes());
+                response.extend_from_slice(&[0, 1, 0, 0, 0, 60]);
+                response.extend_from_slice(&(data.len() as u16).to_be_bytes());
+                response.extend_from_slice(&data);
+                socket.send_to(&response, peer).unwrap();
+            });
+            let output = command(&file)
+                .args(["--server", &address.to_string(), "--domains"])
+                .arg(&file.0)
+                .args([
+                    "--type",
+                    kind,
+                    "--workers",
+                    &workers.to_string(),
+                    "--threads",
+                    &threads.to_string(),
+                    "--max-in-flight",
+                    &window.to_string(),
+                ])
+                .output()
+                .unwrap();
+            handle.join().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains(&format!("Default query type: {kind}")));
+            assert!(text.contains("Attempted: 1 | Sent: 1 | Responses: 1"));
+            let output = command(&file).args(["--topk", "1"]).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains(&format!(" · {kind} · ")));
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+    }
+}
+
+#[test]
 fn topk_zero_is_silent_and_does_not_need_a_saved_run() {
     let directory = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_dns-bench"))

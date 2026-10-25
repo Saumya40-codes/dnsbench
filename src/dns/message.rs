@@ -106,12 +106,7 @@ pub(crate) fn encode_query(
     }
     output.push(0);
 
-    let type_code: u16 = match query_type {
-        QueryType::A => 1,
-        QueryType::Aaaa => 28,
-    };
-
-    output.extend_from_slice(&type_code.to_be_bytes());
+    output.extend_from_slice(&(query_type as u16).to_be_bytes());
     output.extend_from_slice(&INTERNET_CLASS.to_be_bytes());
 }
 
@@ -304,26 +299,72 @@ fn skip_record(packet: &[u8], offset: &mut usize) -> Result<(), ResponseError> {
     let start = *offset + 10;
     let end = start + length;
     packet.get(start..end).ok_or(ResponseError::TooShort)?;
+    validate_record_data(packet, record_type, class, start, end)?;
+    *offset = end;
+    Ok(())
+}
 
+fn validate_record_data(
+    packet: &[u8],
+    record_type: u16,
+    class: u16,
+    start: usize,
+    end: usize,
+) -> Result<(), ResponseError> {
+    let length = end - start;
     if class == INTERNET_CLASS && record_type == 1 && length != 4 {
         return Err(ResponseError::InvalidRecord);
     }
     if class == INTERNET_CLASS && record_type == 28 && length != 16 {
         return Err(ResponseError::InvalidRecord);
     }
-    if matches!(record_type, 2 | 5 | 12) {
-        let mut name_offset = start;
-        read_name(packet, &mut name_offset).map_err(|error| match error {
-            // RDATA is fully present, so an incomplete name is malformed even with TC set.
-            ResponseError::TooShort => ResponseError::InvalidRecord,
-            other => other,
-        })?;
-        if name_offset != end {
-            return Err(ResponseError::InvalidRecord);
+    let mut offset = start;
+    match record_type {
+        2 | 5 | 12 => {
+            read_rdata_name(packet, &mut offset, end)?;
         }
+        15 => {
+            if length < 3 {
+                return Err(ResponseError::InvalidRecord);
+            }
+            offset += 2;
+            read_rdata_name(packet, &mut offset, end)?;
+        }
+        6 => {
+            read_rdata_name(packet, &mut offset, end)?;
+            read_rdata_name(packet, &mut offset, end)?;
+            offset += 20;
+        }
+        16 => {
+            if length == 0 {
+                return Err(ResponseError::InvalidRecord);
+            }
+            while offset < end {
+                offset += 1 + usize::from(packet[offset]);
+            }
+        }
+        _ => offset = end,
     }
-    *offset = end;
+    if offset != end {
+        return Err(ResponseError::InvalidRecord);
+    }
     Ok(())
+}
+
+fn read_rdata_name(
+    packet: &[u8],
+    offset: &mut usize,
+    end: usize,
+) -> Result<WireName, ResponseError> {
+    // RDATA is complete; a name that exceeds it is malformed even when TC is set.
+    let name = read_name(packet, offset).map_err(|error| match error {
+        ResponseError::TooShort => ResponseError::InvalidRecord,
+        other => other,
+    })?;
+    if *offset > end {
+        return Err(ResponseError::InvalidRecord);
+    }
+    Ok(name)
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
@@ -676,6 +717,35 @@ mod tests {
                 let _ = validate_response(&query, &response);
             }
             response[index] = original;
+        }
+    }
+
+    #[test]
+    fn encodes_supported_query_type_numbers_and_matches_questions() {
+        for (query_type, code) in [
+            (QueryType::A, 1u16),
+            (QueryType::Ns, 2),
+            (QueryType::Cname, 5),
+            (QueryType::Soa, 6),
+            (QueryType::Ptr, 12),
+            (QueryType::Mx, 15),
+            (QueryType::Txt, 16),
+            (QueryType::Aaaa, 28),
+        ] {
+            let query = query_bytes("example.com", 7, query_type);
+            assert_eq!(&query[query.len() - 4..], &[0, code as u8, 0, 1]);
+            let response = response_to(&query, 0x8180, 0);
+            assert!(validate_response(&query, &response).is_ok());
+            let wrong_type = if query_type == QueryType::A {
+                QueryType::Mx
+            } else {
+                QueryType::A
+            };
+            let other = query_bytes("example.com", 7, wrong_type);
+            assert_eq!(
+                validate_response(&other, &response),
+                Err(ResponseError::QuestionMismatch)
+            );
         }
     }
 

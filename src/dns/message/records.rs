@@ -5,9 +5,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::QueryType;
+
 use super::{
     HEADER_LEN, INTERNET_CLASS, ResponseError, TRUNCATED, WireName, read_name, read_question,
-    read_u16,
+    read_rdata_name, read_u16, validate_record_data,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,14 +32,13 @@ pub(crate) struct Record {
 
 impl fmt::Display for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let record_type = match self.record_type {
-            1 => "A".into(),
-            2 => "NS".into(),
-            5 => "CNAME".into(),
-            12 => "PTR".into(),
-            28 => "AAAA".into(),
-            other => format!("TYPE{other}"),
-        };
+        let record_type = QueryType::ALL
+            .into_iter()
+            .find(|query_type| *query_type as u16 == self.record_type)
+            .map_or_else(
+                || format!("TYPE{}", self.record_type),
+                |kind| kind.to_string(),
+            );
         let class = if self.class == INTERNET_CLASS {
             "IN".into()
         } else {
@@ -96,6 +97,7 @@ fn read_record(
     let start = *offset + 10;
     let end = start + length;
     let data = packet.get(start..end).ok_or(ResponseError::TooShort)?;
+    validate_record_data(packet, record_type, class, start, end)?;
     let value = match (record_type, class) {
         (1, INTERNET_CLASS) => {
             Ipv4Addr::from(<[u8; 4]>::try_from(data).map_err(|_| ResponseError::InvalidRecord)?)
@@ -107,17 +109,48 @@ fn read_record(
         }
         (2 | 5 | 12, _) => {
             let mut name_offset = start;
-            let value = read_name(packet, &mut name_offset).map_err(|error| {
-                if error == ResponseError::TooShort {
-                    ResponseError::InvalidRecord
-                } else {
-                    error
-                }
-            })?;
-            if name_offset != end {
-                return Err(ResponseError::InvalidRecord);
+            display_name(read_rdata_name(packet, &mut name_offset, end)?)
+        }
+        (15, _) => {
+            let preference = read_u16(data, 0);
+            let mut name_offset = start + 2;
+            let exchange = display_name(read_rdata_name(packet, &mut name_offset, end)?);
+            format!("{preference} {exchange}")
+        }
+        (6, _) => {
+            let mut name_offset = start;
+            let primary = display_name(read_rdata_name(packet, &mut name_offset, end)?);
+            let mailbox = display_name(read_rdata_name(packet, &mut name_offset, end)?);
+            let mut value = format!("{primary} {mailbox}");
+            for field in packet[name_offset..end].chunks_exact(4) {
+                let number = u32::from_be_bytes(field.try_into().expect("four-byte SOA field"));
+                write!(value, " {number}").expect("writing to a String cannot fail");
             }
-            display_name(value)
+            value
+        }
+        (16, _) => {
+            let mut value = String::new();
+            let mut offset = 0;
+            while offset < data.len() {
+                let length = usize::from(data[offset]);
+                if offset != 0 {
+                    value.push(' ');
+                }
+                value.push('"');
+                for &byte in &data[offset + 1..offset + 1 + length] {
+                    match byte {
+                        b'"' | b'\\' => {
+                            value.push('\\');
+                            value.push(char::from(byte));
+                        }
+                        b' '..=b'~' => value.push(char::from(byte)),
+                        _ => write!(value, "\\{byte:03}").expect("writing to a String cannot fail"),
+                    }
+                }
+                value.push('"');
+                offset += 1 + length;
+            }
+            value
         }
         _ => format!("<{length} bytes; not decoded>"),
     };

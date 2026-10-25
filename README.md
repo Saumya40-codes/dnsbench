@@ -8,7 +8,7 @@ A DNS benchmark CLI written in Rust. Send queries to a DNS server, measure respo
 
 ## Features
 
-- UDP queries for A and AAAA records over IPv4 or IPv6.
+- UDP queries for A, AAAA, NS, MX, TXT, SOA, CNAME, and PTR records over IPv4 or IPv6.
 - Configurable workers, runtime threads, query limits, and timeouts.
 - Query each input entry once, send a fixed number of queries, or run for a duration.
 - Latency percentiles, throughput, DNS response codes, timeouts, and socket errors.
@@ -55,10 +55,14 @@ Send 10,000 queries with a larger window:
 | `--workers` | Logical workers, each owning a UDP socket | `2` |
 | `--threads` | Tokio runtime threads | `1` |
 | `--timeout` | Per-query timeout | `2s` |
-| `--type` | Query type: `A` or `AAAA` | `A` |
+| `--type` | `A`, `AAAA`, `NS`, `MX`, `TXT`, `SOA`, `CNAME`, or `PTR` | `A` |
 | `--shuffle --seed 42` | Repeat a seeded permutation of the input | Off |
 
 Workers must not exceed max in flight. Server addresses accept an optional port, defaulting to `53`. Run `--help` for all options.
+
+Use `--type MX` for mail servers or `--type TXT` for text records. Query types are case-insensitive. PTR workloads must contain reverse DNS names, such as `1.2.0.192.in-addr.arpa` for `192.0.2.1`.
+
+Saved results decode all supported record types, including MX preferences, SOA fields, and separate quoted TXT strings. Truncated UDP responses are reported without a TCP retry.
 
 ## Docker
 

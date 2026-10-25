@@ -101,11 +101,7 @@ fn print_config(config: &RunConfig) {
     }
 
     println!("Timeout: {:?}", config.timeout());
-    let query_type = match config.default_query_type() {
-        config::QueryType::A => "A",
-        config::QueryType::Aaaa => "AAAA",
-    };
-    println!("Default query type: {query_type}");
+    println!("Default query type: {}", config.default_query_type());
 
     match config.order() {
         QueryOrder::Sequential => println!("Order: sequential"),

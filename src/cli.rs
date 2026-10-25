@@ -63,8 +63,8 @@ pub struct Cli {
     #[arg(long, default_value = "2s", value_name = "TIME", value_parser = parse_duration)]
     timeout: Duration,
 
-    /// Default query type: A or AAAA
-    #[arg(long = "type", default_value = "A", value_name = "TYPE", value_parser = parse_query_type)]
+    /// Query type: A, AAAA, NS, MX, TXT, SOA, CNAME, or PTR
+    #[arg(long = "type", default_value = "A", value_name = "TYPE")]
     query_type: QueryType,
 
     /// Traverse a seeded permutation of the workload
@@ -134,16 +134,6 @@ fn parse_server(value: &str) -> Result<SocketAddr, String> {
     }
 
     Err("expected an IP address or IP:port; IPv6 with a port must use [address]:port".into())
-}
-
-fn parse_query_type(value: &str) -> Result<QueryType, String> {
-    if value.eq_ignore_ascii_case("A") {
-        Ok(QueryType::A)
-    } else if value.eq_ignore_ascii_case("AAAA") {
-        Ok(QueryType::Aaaa)
-    } else {
-        Err("supported query types are A and AAAA".into())
-    }
 }
 
 #[cfg(test)]
@@ -329,8 +319,21 @@ mod tests {
     }
 
     #[test]
+    fn accepts_supported_query_types_case_insensitively() {
+        for query_type in QueryType::ALL {
+            for value in [
+                query_type.to_string(),
+                query_type.to_string().to_lowercase(),
+            ] {
+                let config = parse(&["--type", &value]).unwrap().into_config().unwrap();
+                assert_eq!(config.default_query_type(), query_type);
+            }
+        }
+    }
+
+    #[test]
     fn rejects_invalid_query_count_and_type() {
         assert!(parse(&["--queries", "0"]).is_err());
-        assert!(parse(&["--duration", "30s", "--type", "MX"]).is_err());
+        assert!(parse(&["--duration", "30s", "--type", "AXFR"]).is_err());
     }
 }
