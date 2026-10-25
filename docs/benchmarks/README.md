@@ -54,7 +54,7 @@ Replies, timeouts, SERVFAIL, and rejected-packet counts are summed across the th
 
 Cloudflare had the lowest median A and AAAA response latency in this sample. OpenDNS was next by p50. Tail latency and timeouts varied substantially, so p50 alone does not describe the run.
 
-The 2-second deadline matters. Separate [dig spot checks](2026-10-25/diagnostics.txt) observed a Google SERVFAIL for `www.gov.in` after 2.192 seconds and an AdGuard empty answer for `nic.in` after 2.157 seconds. Those checks occurred after the benchmark and are not included in its metrics. A timeout means no acceptable response arrived within the deadline; it does not establish packet loss.
+The 2-second deadline matters. Separate dig spot checks observed a Google SERVFAIL for `www.gov.in` after 2.192 seconds and an AdGuard empty answer for `nic.in` after 2.157 seconds. Those checks occurred after the benchmark and are not included in its metrics. A timeout means no acceptable response arrived within the deadline; it does not establish packet loss.
 
 ## Reproduce
 
@@ -66,6 +66,6 @@ python3 docs/benchmarks/run.py --output /tmp/dnsbench-comparison
 python3 docs/benchmarks/summarize.py /tmp/dnsbench-comparison/results.json
 ```
 
-Choose a new output directory for each comparison. The runner saves raw logs and snapshot headers in `results.json`, including exact commands, timestamps, counts, histogram percentiles, and binary/workload hashes. Full compressed snapshots are kept in a separate temporary directory whose path is printed on completion. The default last-run snapshot is not overwritten.
+Choose a new output directory for each comparison. Without `--output`, the runner creates a directory under the system temporary directory. It saves raw logs and snapshot headers in `results.json`, including exact commands, timestamps, counts, histogram percentiles, and binary/workload hashes. Full compressed snapshots are kept in a separate temporary directory whose path is printed on completion. The default last-run snapshot is not overwritten.
 
-The published [raw logs and summaries](2026-10-25/) include all 30 measured runs and all 10 warmups. The runner checks reachability during warmup and skips measured runs for a provider/type with no warmup responses. All five providers were reachable in this comparison. Repeating the commands reproduces the procedure, not the same network timings.
+This comparison used 30 measured runs and 10 warmups. Generated logs and JSON results are not committed. The runner checks reachability during warmup and skips measured runs for a provider/type with no warmup responses. All five providers were reachable in this comparison. Repeating the commands reproduces the procedure, not the same network timings.

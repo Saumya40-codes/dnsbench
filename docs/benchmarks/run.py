@@ -10,8 +10,8 @@ import time
 
 root = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description='Compare five public DNS resolvers with dnsbench.')
-parser.add_argument('--output', type=Path, default=root / 'docs/benchmarks' /
-    datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H%M%SZ'),
+parser.add_argument('--output', type=Path, default=Path(tempfile.gettempdir()) /
+    datetime.datetime.now(datetime.timezone.utc).strftime('dnsbench-comparison-%Y-%m-%dT%H%M%SZ'),
     help='New directory for raw logs and results.json; must not already exist')
 args = parser.parse_args()
 output = args.output.resolve()
