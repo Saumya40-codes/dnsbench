@@ -39,9 +39,13 @@ pub(crate) struct UdpClient {
     socket: UdpSocket,
     query_buffer: Vec<u8>,
     receive_buffer: Vec<u8>,
+    receive_len: usize,
 }
 
 impl UdpClient {
+    pub(crate) fn response_packet(&self) -> &[u8] {
+        &self.receive_buffer[..self.receive_len]
+    }
     pub(crate) fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
     }
@@ -59,6 +63,7 @@ impl UdpClient {
             socket,
             query_buffer: Vec::with_capacity(MAX_QUERY_LEN),
             receive_buffer: vec![0; RECEIVE_CAPACITY],
+            receive_len: 0,
         })
     }
 
@@ -87,7 +92,7 @@ impl UdpClient {
             &mut self.query_buffer,
         );
 
-        // Setup and encoding are excluded; sending, waiting, and validation are timed.
+        // Measure the successful send attempt to receipt; accept the sample only after validation.
         let started = Instant::now();
         let deadline = started.checked_add(timeout).ok_or_else(|| {
             io::Error::new(
@@ -96,13 +101,23 @@ impl UdpClient {
             )
         })?;
         let mut rejected = RejectedPackets::default();
-        let mut sent = false;
-        let outcome = self.exchange_until(deadline, send_by, &mut rejected, &mut sent);
+        let mut sent_at = None;
+        let mut received_at = None;
+        let outcome = self.exchange_until(
+            deadline,
+            send_by,
+            timeout,
+            &mut rejected,
+            &mut sent_at,
+            &mut received_at,
+        );
 
         Ok(QueryReport {
             outcome,
-            sent,
-            elapsed: started.elapsed(),
+            sent: sent_at.is_some(),
+            elapsed: received_at
+                .unwrap_or_else(Instant::now)
+                .saturating_duration_since(sent_at.unwrap_or(started)),
             rejected,
         })
     }
@@ -111,8 +126,10 @@ impl UdpClient {
         &mut self,
         deadline: Instant,
         send_by: Option<Instant>,
+        timeout: Duration,
         rejected: &mut RejectedPackets,
-        sent: &mut bool,
+        sent_at: &mut Option<Instant>,
+        received_at: &mut Option<Instant>,
     ) -> QueryOutcome {
         loop {
             let send_deadline = send_by.map_or(deadline, |limit| limit.min(deadline));
@@ -123,9 +140,10 @@ impl UdpClient {
             if let Err(error) = self.socket.set_write_timeout(Some(remaining)) {
                 return QueryOutcome::SocketError(error);
             }
+            let attempted_at = Instant::now();
             match self.socket.send(&self.query_buffer) {
                 Ok(length) if length == self.query_buffer.len() => {
-                    *sent = true;
+                    *sent_at = Some(attempted_at);
                     break;
                 }
                 Ok(_) => {
@@ -146,6 +164,12 @@ impl UdpClient {
             }
         }
 
+        let Some(deadline) = sent_at.expect("query was sent").checked_add(timeout) else {
+            return QueryOutcome::SocketError(io::Error::new(
+                ErrorKind::InvalidInput,
+                "query timeout exceeds the clock's range",
+            ));
+        };
         loop {
             // Recompute the remaining budget, so rejected packets never reset the deadline.
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -167,17 +191,17 @@ impl UdpClient {
                 }
                 Err(error) => return QueryOutcome::SocketError(error),
             };
-            if Instant::now() >= deadline {
+            let arrived_at = Instant::now();
+            if arrived_at >= deadline {
+                *received_at = Some(arrived_at);
                 return QueryOutcome::Timeout;
             }
 
+            self.receive_len = length;
             match validate_response(&self.query_buffer, &self.receive_buffer[..length]) {
                 Ok(summary) => {
-                    return if Instant::now() >= deadline {
-                        QueryOutcome::Timeout
-                    } else {
-                        QueryOutcome::Response(summary)
-                    };
+                    *received_at = Some(arrived_at);
+                    return QueryOutcome::Response(summary);
                 }
                 Err(
                     ResponseError::IdMismatch

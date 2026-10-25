@@ -19,14 +19,25 @@ use crate::duration::parse_duration;
     .multiple(false)
     .args(["duration", "queries"])
 ))]
+#[command(group(ArgGroup::new("run").multiple(true).args([
+    "server", "domains", "max_in_flight", "workers", "threads", "duration", "queries", "timeout", "query_type", "shuffle", "seed"
+])))]
 pub struct Cli {
     /// DNS server IP, optionally including a port; defaults to port 53
-    #[arg(long, value_name = "ENDPOINT", value_parser = parse_server)]
-    server: SocketAddr,
+    #[arg(long, required_unless_present = "topk", value_name = "ENDPOINT", value_parser = parse_server)]
+    server: Option<SocketAddr>,
 
     /// Workload file containing domain names
-    #[arg(long, value_name = "FILE")]
-    domains: PathBuf,
+    #[arg(long, required_unless_present = "topk", value_name = "FILE")]
+    domains: Option<PathBuf>,
+
+    /// Inspect the last run's K slowest responding domains; 0 produces no output
+    #[arg(long, value_name = "K", conflicts_with = "run")]
+    pub(crate) topk: Option<usize>,
+
+    /// Override the saved-run file used for saving or inspection
+    #[arg(long, value_name = "PATH")]
+    pub(crate) results_file: Option<PathBuf>,
 
     /// Maximum outstanding queries across all workers (at most 65536 per worker)
     #[arg(long, alias = "concurrency", default_value_t = 1)]
@@ -67,6 +78,8 @@ pub struct Cli {
 
 #[derive(Debug, Error)]
 pub enum CliConfigError {
+    #[error("--server and --domains are required to run a benchmark")]
+    MissingRunArguments,
     #[error("--duration and --queries cannot be used together")]
     InvalidStopCondition,
 
@@ -79,6 +92,9 @@ pub enum CliConfigError {
 
 impl Cli {
     pub fn into_config(self) -> Result<RunConfig, CliConfigError> {
+        let (Some(server), Some(domains)) = (self.server, self.domains) else {
+            return Err(CliConfigError::MissingRunArguments);
+        };
         let stop_condition = match (self.duration, self.queries) {
             (None, None) => StopCondition::Once,
             (Some(duration), None) => StopCondition::Duration(duration),
@@ -93,8 +109,8 @@ impl Cli {
         };
 
         let input = RunConfigInput {
-            server: self.server,
-            domains_path: self.domains,
+            server,
+            domains_path: domains,
             max_in_flight: self.max_in_flight,
             workers: self.workers,
             threads: self.threads,
@@ -150,6 +166,15 @@ mod tests {
     #[test]
     fn command_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn inspection_needs_no_run_arguments_and_rejects_run_flags() {
+        let cli = Cli::try_parse_from(["dns-bench", "--topk", "0"]).unwrap();
+        assert_eq!(cli.topk, Some(0));
+        assert!(Cli::try_parse_from(["dns-bench", "--topk", "3", "--server", "1.1.1.1"]).is_err());
+        assert!(Cli::try_parse_from(["dns-bench", "--topk", "3", "--workers", "2"]).is_err());
+        assert!(Cli::try_parse_from(["dns-bench"]).is_err());
     }
 
     #[test]

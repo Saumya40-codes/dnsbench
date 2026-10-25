@@ -1,5 +1,8 @@
 use thiserror::Error;
 
+mod records;
+pub(crate) use records::{Record, decode_records};
+
 use crate::config::QueryType;
 
 use super::name::DnsName;
@@ -21,6 +24,20 @@ pub(crate) enum Rcode {
     NotImp,
     Refused,
     Other(u8),
+}
+
+impl std::fmt::Display for Rcode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoError => f.write_str("NOERROR"),
+            Self::FormErr => f.write_str("FORMERR"),
+            Self::ServFail => f.write_str("SERVFAIL"),
+            Self::NxDomain => f.write_str("NXDOMAIN"),
+            Self::NotImp => f.write_str("NOTIMP"),
+            Self::Refused => f.write_str("REFUSED"),
+            Self::Other(code) => write!(f, "RCODE{code}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
