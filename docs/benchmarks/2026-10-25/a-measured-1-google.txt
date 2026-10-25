@@ -1,0 +1,34 @@
+Server: 8.8.8.8:53
+Domains: docs/benchmarks/domains.txt
+Max in flight: 32
+Queries: 1000
+Timeout: 2s
+Default query type: A
+Order: shuffled
+Seed: 42
+Loaded domains: 100
+
+Stop: query count reached
+Workers: 4
+Runtime threads: 2
+Measured elapsed: 4.247s (includes any final query completion)
+Attempted: 1000 | Sent: 1000 | Responses: 990
+Timeouts: 10 | Socket errors: 0
+Sent QPS: 235.45 | Response QPS: 233.09 | NOERROR-with-answers QPS: 226.03
+Response rate: 99.00%
+Rejected packets: 5 mismatched, 0 malformed
+Socket rotations: 0
+Peak queries in flight: 32
+RCODE counts: NOERROR(0)=990
+Latency / elapsed (ms; HDR, 3 significant digits):
+Population                   Count         p50         p95         p99         max
+NOERROR with answers           960      26.640     377.750     732.430    1274.020
+NOERROR empty                   30      35.783     194.380     197.394     197.394
+DNS errors                       0         n/a         n/a         n/a         n/a
+Truncated                        0         n/a         n/a         n/a         n/a
+Timeout elapsed                 10    2001.732    2002.780    2002.780    2002.780
+Socket error elapsed             0         n/a         n/a         n/a         n/a
+NOERROR with answers is a protocol outcome; answer correctness is not checked.
+Client-observed RTT: successful send attempt to matching receive; validation and reporting excluded.
+
+Saved run: /tmp/dnsbench-comparison-6i5nxhaz/a-measured-1-google.jsonl.zst

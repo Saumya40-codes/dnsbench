@@ -1,0 +1,61 @@
+Separate spot checks after the benchmark. Not included in benchmark metrics.
+
+2026-10-25T07:05:24.853517+00:00
+$ dig @8.8.8.8 www.gov.in A +noedns +tries=1 +time=5
+
+; <<>> DiG 9.18.39-0ubuntu0.24.04.8-Ubuntu <<>> @8.8.8.8 www.gov.in A +noedns +tries=1 +time=5
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: SERVFAIL, id: 34877
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0
+
+;; QUESTION SECTION:
+;www.gov.in.			IN	A
+
+;; Query time: 2192 msec
+;; SERVER: 8.8.8.8#53(8.8.8.8) (UDP)
+;; WHEN: Sun Oct 25 12:35:24 IST 2026
+;; MSG SIZE  rcvd: 28
+
+
+2026-10-25T07:05:24.970594+00:00
+$ dig @1.1.1.1 www.gov.in A +noedns +tries=1 +time=5
+
+; <<>> DiG 9.18.39-0ubuntu0.24.04.8-Ubuntu <<>> @1.1.1.1 www.gov.in A +noedns +tries=1 +time=5
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: SERVFAIL, id: 39131
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0
+
+;; QUESTION SECTION:
+;www.gov.in.			IN	A
+
+;; Query time: 80 msec
+;; SERVER: 1.1.1.1#53(1.1.1.1) (UDP)
+;; WHEN: Sun Oct 25 12:35:24 IST 2026
+;; MSG SIZE  rcvd: 28
+
+
+2026-10-25T07:05:27.166714+00:00
+$ dig @94.140.14.140 nic.in A +noedns +tries=1 +time=5
+
+; <<>> DiG 9.18.39-0ubuntu0.24.04.8-Ubuntu <<>> @94.140.14.140 nic.in A +noedns +tries=1 +time=5
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 38624
+;; flags: qr rd ra ad; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 0
+
+;; QUESTION SECTION:
+;nic.in.				IN	A
+
+;; AUTHORITY SECTION:
+nic.in.			900	IN	SOA	nicnet.nic.in. nsadmin.nic.in. 2026102337 1800 0 1209600 14400
+
+;; Query time: 2157 msec
+;; SERVER: 94.140.14.140#53(94.140.14.140) (UDP)
+;; WHEN: Sun Oct 25 12:35:27 IST 2026
+;; MSG SIZE  rcvd: 75
+
