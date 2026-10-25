@@ -2,6 +2,10 @@
 
 A DNS benchmark CLI written in Rust. Send queries to a DNS server, measure response times, and inspect the slowest domains from your last run.
 
+## Flow
+
+![DNS benchmark flow](docs/dnsbench.png)
+
 ## Features
 
 - UDP queries for A and AAAA records over IPv4 or IPv6.
