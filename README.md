@@ -73,3 +73,19 @@ Domains are ranked by their slowest recorded response. Duplicate domain entries 
 The save location is printed after each run. Use `--results-file PATH` when benchmarking or inspecting to select another snapshot. The default snapshot is replaced by the next run.
 
 Response latency measures the interval from the successful send attempt to receiving a matching response. Validation and reporting follow the receive timestamp. Scheduling and socket queueing can still affect the observed latency.
+
+## Demo
+
+```sh
+./target/release/dns-bench --server 1.1.1.1 --domains domains.txt \
+  --queries 1000 --workers 2 --threads 1 --max-in-flight 16 \
+  --shuffle --seed 42
+```
+
+![Benchmark results](docs/dnsbench-run.png)
+
+```sh
+./target/release/dns-bench --topk 5
+```
+
+![Slowest domains](docs/dnsbench-topk.png)
