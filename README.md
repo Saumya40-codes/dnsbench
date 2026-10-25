@@ -60,6 +60,25 @@ Send 10,000 queries with a larger window:
 
 Workers must not exceed max in flight. Server addresses accept an optional port, defaulting to `53`. Run `--help` for all options.
 
+## Docker
+
+```sh
+docker build -t dnsbench .
+mkdir -p data
+docker run --rm \
+  -v "$(pwd)/domains.txt:/domains.txt:ro" \
+  -v "$(pwd)/data:/state" \
+  dnsbench --server 1.1.1.1 --domains /domains.txt
+```
+
+Snapshots are saved in `data/dnsbench/`. Inspect the saved run:
+
+```sh
+docker run --rm --network none \
+  -v "$(pwd)/data:/state:ro" \
+  dnsbench --topk 2
+```
+
 ## Inspect a run
 
 Each run saves a compressed snapshot after measurement finishes. Inspect the two slowest responding domains without sending more queries:
