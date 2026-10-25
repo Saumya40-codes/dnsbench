@@ -367,6 +367,53 @@ async fn a_worker_sees_cancellation_that_happened_before_it_subscribed() {
     assert!(engine.pending.is_empty());
 }
 
+#[tokio::test]
+async fn captured_receive_time_excludes_later_processing_from_latency() {
+    let (_socket, config) = setup(
+        2,
+        StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
+        Duration::from_secs(1),
+    );
+    let shared = Arc::new(Shared::new(&config, names().len()));
+    let mut engine =
+        Engine::new(Arc::new(config), Arc::from(names()), Arc::clone(&shared), 2).unwrap();
+    let mut packet = Vec::new();
+    encode_query(&engine.domains[0], 7, QueryType::A, true, &mut packet);
+    packet[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+    let length = packet.len();
+    engine.receive_buffer = packet;
+    let sent_at = Instant::now() - Duration::from_millis(100);
+    let received_at = sent_at + Duration::from_millis(1);
+    engine.pending.insert(
+        7,
+        PendingQuery {
+            domain_index: 0,
+            sent_at,
+        },
+    );
+    shared.in_flight.store(1, Ordering::Relaxed);
+    engine
+        .complete(
+            7,
+            QueryOutcome::Response(crate::dns::message::ResponseSummary {
+                rcode: crate::dns::message::Rcode::NoError,
+                truncated: false,
+                answer_count: 0,
+            }),
+            Some((received_at, length)),
+        )
+        .unwrap();
+    assert_eq!(
+        engine.stats.domains[&0]
+            .slowest
+            .as_ref()
+            .unwrap()
+            .elapsed_ns,
+        1_000_000
+    );
+    assert!((990_000..1_010_000).contains(&engine.stats.latencies[1].value_at_quantile(0.5)));
+}
+
 #[test]
 fn concurrent_aaaa_queries_work_over_ipv6() {
     let socket = match UdpSocket::bind("[::1]:0") {

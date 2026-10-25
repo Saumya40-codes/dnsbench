@@ -1,8 +1,10 @@
 mod concurrent;
+mod domain;
 mod input;
 mod results;
 mod workers;
 
+pub(crate) use domain::DomainStats;
 pub(crate) use input::load_domains;
 
 use std::{io, time::Instant};
@@ -17,7 +19,7 @@ use crate::{
     },
 };
 pub(crate) use results::StopReason;
-use results::{RunReport, RunStats};
+pub(crate) use results::{LATENCY_GROUPS, RESPONSE_TIMING, RunReport, RunStats};
 
 #[derive(Debug, Error)]
 pub(crate) enum BenchmarkError {
@@ -169,10 +171,17 @@ pub(crate) fn run(
             break StopReason::Duration;
         }
         next_id += 1;
-        domain_index = (domain_index + 1) % domains.len();
         let socket_failed = matches!(report.outcome, QueryOutcome::SocketError(_));
         let sent = report.sent;
+        let packet =
+            matches!(report.outcome, QueryOutcome::Response(_)).then(|| client.response_packet());
+        stats
+            .domains
+            .entry(domain_index)
+            .or_default()
+            .record(&report, packet);
         stats.record(report)?;
+        domain_index = (domain_index + 1) % domains.len();
         if socket_failed {
             break StopReason::SocketError;
         }

@@ -66,22 +66,27 @@ impl Engine {
                     let kind = error.kind();
                     let message = error.to_string();
                     if self.send_started.is_some() || self.pending.is_empty() {
-                        self.stats.record(QueryReport {
-                            outcome: QueryOutcome::SocketError(io::Error::new(
-                                kind,
-                                message.clone(),
-                            )),
-                            sent: false,
-                            elapsed: self
-                                .send_started
-                                .map_or(Duration::ZERO, |time| time.elapsed()),
-                            rejected: RejectedPackets::default(),
-                        })?;
+                        self.record(
+                            self.domain_index,
+                            QueryReport {
+                                outcome: QueryOutcome::SocketError(io::Error::new(
+                                    kind,
+                                    message.clone(),
+                                )),
+                                sent: false,
+                                elapsed: self
+                                    .send_started
+                                    .map_or(Duration::ZERO, |time| time.elapsed()),
+                                rejected: RejectedPackets::default(),
+                            },
+                            None,
+                        )?;
                     }
                     while let Some(&id) = self.pending.keys().next() {
                         self.complete(
                             id,
                             QueryOutcome::SocketError(io::Error::new(kind, message.clone())),
+                            None,
                         )?;
                     }
                     self.shared.cancel(StopReason::SocketError);
@@ -274,12 +279,16 @@ impl Engine {
                 .checked_add(self.config.timeout())
                 .ok_or(BenchmarkError::ClockRange)?;
             if Instant::now() >= deadline {
-                self.stats.record(QueryReport {
-                    outcome: QueryOutcome::Timeout,
-                    sent: false,
-                    elapsed: started.elapsed(),
-                    rejected: RejectedPackets::default(),
-                })?;
+                self.record(
+                    Some(domain_index),
+                    QueryReport {
+                        outcome: QueryOutcome::Timeout,
+                        sent: false,
+                        elapsed: started.elapsed(),
+                        rejected: RejectedPackets::default(),
+                    },
+                    None,
+                )?;
                 self.send_started = None;
                 self.stop_reason = Some(StopReason::SendDeadline);
                 self.shared.cancel(StopReason::SendDeadline);
@@ -291,13 +300,14 @@ impl Engine {
                 self.stop_reason = Some(StopReason::Duration);
                 break;
             }
+            let sent_at = Instant::now();
             match self.socket.try_send(&self.query_buffer) {
                 Ok(length) if length == self.query_buffer.len() => {
                     self.pending.insert(
                         id,
                         PendingQuery {
                             domain_index,
-                            sent_at: started,
+                            sent_at,
                         },
                     );
                     self.deadlines.push_back(id);
@@ -333,6 +343,7 @@ impl Engine {
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error.into()),
             };
+            let received_at = Instant::now();
             if length < 12 {
                 self.stats.rejected.malformed = self.stats.rejected.malformed.saturating_add(1);
                 continue;
@@ -342,8 +353,8 @@ impl Engine {
                 self.stats.rejected.mismatched = self.stats.rejected.mismatched.saturating_add(1);
                 continue;
             };
-            if pending.sent_at.elapsed() >= self.config.timeout() {
-                self.complete(id, QueryOutcome::Timeout)?;
+            if received_at.saturating_duration_since(pending.sent_at) >= self.config.timeout() {
+                self.complete(id, QueryOutcome::Timeout, Some((received_at, length)))?;
                 self.stats.rejected.mismatched = self.stats.rejected.mismatched.saturating_add(1);
                 continue;
             }
@@ -357,12 +368,11 @@ impl Engine {
             );
             match validate_response(&self.query_buffer, &self.receive_buffer[..length]) {
                 Ok(summary) => {
-                    let outcome = if pending.sent_at.elapsed() >= self.config.timeout() {
-                        QueryOutcome::Timeout
-                    } else {
-                        QueryOutcome::Response(summary)
-                    };
-                    self.complete(id, outcome)?;
+                    self.complete(
+                        id,
+                        QueryOutcome::Response(summary),
+                        Some((received_at, length)),
+                    )?;
                 }
                 Err(
                     ResponseError::IdMismatch
@@ -396,7 +406,7 @@ impl Engine {
                 break;
             }
             self.deadlines.pop_front();
-            self.complete(id, QueryOutcome::Timeout)?;
+            self.complete(id, QueryOutcome::Timeout, None)?;
         }
         // An early slow query must not retain an unbounded history of completed IDs.
         if self.deadlines.len() > self.max_in_flight * 2 {
@@ -407,12 +417,16 @@ impl Engine {
             && let Some(started) = self.send_started
             && started.elapsed() >= self.config.timeout()
         {
-            self.stats.record(QueryReport {
-                outcome: QueryOutcome::Timeout,
-                sent: false,
-                elapsed: started.elapsed(),
-                rejected: RejectedPackets::default(),
-            })?;
+            self.record(
+                self.domain_index,
+                QueryReport {
+                    outcome: QueryOutcome::Timeout,
+                    sent: false,
+                    elapsed: started.elapsed(),
+                    rejected: RejectedPackets::default(),
+                },
+                None,
+            )?;
             self.send_started = None;
             self.stop_reason = Some(StopReason::SendDeadline);
             self.shared.cancel(StopReason::SendDeadline);
@@ -428,15 +442,43 @@ impl Engine {
             .transpose()
     }
 
-    fn complete(&mut self, id: u16, outcome: QueryOutcome) -> Result<(), BenchmarkError> {
+    fn complete(
+        &mut self,
+        id: u16,
+        outcome: QueryOutcome,
+        received: Option<(Instant, usize)>,
+    ) -> Result<(), BenchmarkError> {
         let pending = self.pending.remove(&id).expect("query is pending");
         self.shared.in_flight.fetch_sub(1, Ordering::Relaxed);
-        self.stats.record(QueryReport {
-            outcome,
-            sent: true,
-            elapsed: pending.sent_at.elapsed(),
-            rejected: RejectedPackets::default(),
-        })
+        self.record(
+            Some(pending.domain_index),
+            QueryReport {
+                outcome,
+                sent: true,
+                elapsed: received.map_or_else(
+                    || pending.sent_at.elapsed(),
+                    |(at, _)| at.saturating_duration_since(pending.sent_at),
+                ),
+                rejected: RejectedPackets::default(),
+            },
+            received.map(|(_, length)| length),
+        )
+    }
+    fn record(
+        &mut self,
+        domain_index: Option<usize>,
+        report: QueryReport,
+        packet_len: Option<usize>,
+    ) -> Result<(), BenchmarkError> {
+        if let Some(index) = domain_index {
+            let packet = packet_len.map(|length| &self.receive_buffer[..length]);
+            self.stats
+                .domains
+                .entry(index)
+                .or_default()
+                .record(&report, packet);
+        }
+        self.stats.record(report)
     }
 }
 

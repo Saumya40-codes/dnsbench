@@ -1,4 +1,4 @@
-use std::{fmt, time::Duration};
+use std::{collections::HashMap, fmt, time::Duration};
 
 use hdrhistogram::Histogram;
 
@@ -7,9 +7,11 @@ use crate::dns::{
     udp::{QueryOutcome, QueryReport, RejectedPackets},
 };
 
-use super::BenchmarkError;
+use super::{BenchmarkError, DomainStats};
 
-const LATENCY_GROUPS: [&str; 6] = [
+pub(crate) const RESPONSE_TIMING: &str = "Client-observed RTT: successful send attempt to matching receive; validation and reporting excluded.";
+
+pub(crate) const LATENCY_GROUPS: [&str; 6] = [
     "NOERROR with answers",
     "NOERROR empty",
     "DNS errors",
@@ -48,6 +50,7 @@ pub(crate) struct RunReport {
 }
 
 pub(crate) struct RunStats {
+    pub(crate) domains: HashMap<usize, DomainStats>,
     pub(crate) attempted: u64,
     pub(crate) sent: u64,
     pub(crate) responses: u64,
@@ -63,6 +66,9 @@ pub(crate) struct RunStats {
 
 impl RunStats {
     pub(crate) fn merge(&mut self, other: Self) -> Result<(), BenchmarkError> {
+        for (index, stats) in other.domains {
+            self.domains.entry(index).or_default().merge(stats);
+        }
         self.attempted += other.attempted;
         self.sent += other.sent;
         self.responses += other.responses;
@@ -93,6 +99,7 @@ impl RunStats {
         // Fixed range and precision bound memory regardless of query count.
         let histogram = Histogram::new_with_bounds(1, u64::MAX, 3)?;
         Ok(Self {
+            domains: HashMap::new(),
             attempted: 0,
             sent: 0,
             responses: 0,
@@ -259,6 +266,7 @@ impl fmt::Display for RunReport {
             f,
             "NOERROR with answers is a protocol outcome; answer correctness is not checked."
         )?;
+        writeln!(f, "{RESPONSE_TIMING}")?;
         Ok(())
     }
 }
