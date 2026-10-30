@@ -122,6 +122,16 @@ fn topk_zero_is_silent_and_does_not_need_a_saved_run() {
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    for flag in ["--topk", "--bottomk", "--limit"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_dns-bench"))
+            .args(["get", flag, "0", "--results-file"])
+            .arg(directory.path().join("missing.zst"))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
 }
 
 #[test]
@@ -239,6 +249,31 @@ fn a_run_can_be_inspected_later_without_sending_queries() {
         let output = command(&file).args(["--topk", "4"]).output().unwrap();
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("only 3 workload entries"));
+        for (flag, expected, excluded) in [
+            ("--topk", "slow.example", "fast.example"),
+            ("--bottomk", "fast.example", "slow.example"),
+            ("--limit", "slow.example", "fast.example"),
+        ] {
+            let output = command(&file).args(["get", flag, "1"]).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains(expected));
+            assert!(!text.contains(excluded));
+        }
+        let output = command(&file)
+            .args(["get", "--domain", "SLOW.EXAMPLE."])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "slow.example. 60 IN A 192.0.2.7\n"
+        );
+        assert_eq!(fs::read(saved_path).unwrap(), before);
         socket.set_nonblocking(true).unwrap();
         assert_eq!(
             socket.recv_from(&mut [0; 512]).unwrap_err().kind(),

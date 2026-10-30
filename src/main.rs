@@ -15,23 +15,33 @@ use crate::{
 };
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    if let Some(k) = cli.topk {
-        if k == 0 {
+    let mut cli = Cli::parse();
+    let mut results_file = cli.results_file.take();
+    let selection = match cli.command.take() {
+        Some(cli::Command::Get(args)) => {
+            results_file = args.results_file;
+            Some(match (args.topk, args.bottomk, args.limit, args.domain) {
+                (Some(k), _, _, _) => snapshot::Selection::Top(k),
+                (_, Some(k), _, _) => snapshot::Selection::Bottom(k),
+                (_, _, Some(k), _) => snapshot::Selection::Limit(k),
+                (_, _, _, Some(domain)) => snapshot::Selection::Domain(domain),
+                _ => unreachable!("clap requires a get selector"),
+            })
+        }
+        None => cli.topk.map(snapshot::Selection::Top),
+    };
+    if let Some(selection) = selection {
+        if selection.is_empty() {
             return ExitCode::SUCCESS;
         }
-        let path = match cli
-            .results_file
-            .map(Ok)
-            .unwrap_or_else(snapshot::default_path)
-        {
+        let path = match results_file.map(Ok).unwrap_or_else(snapshot::default_path) {
             Ok(path) => path,
             Err(error) => {
                 eprintln!("error: {error}");
                 return ExitCode::FAILURE;
             }
         };
-        return match snapshot::inspect(&path, k) {
+        return match snapshot::inspect(&path, &selection) {
             Ok(Some(report)) => {
                 print!("{report}");
                 ExitCode::SUCCESS
@@ -43,7 +53,6 @@ fn main() -> ExitCode {
             }
         };
     }
-    let results_file = cli.results_file.clone();
     let config = match cli.into_config() {
         Ok(config) => config,
         Err(error) => {
@@ -60,6 +69,7 @@ fn main() -> ExitCode {
     };
     print_config(&config);
     println!("Loaded domains: {}", domains.len());
+    let input_domains = domains.clone();
     let report = match benchmark::run(&config, &mut domains) {
         Ok(report) => report,
         Err(error) => {
@@ -81,7 +91,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Err(error) = snapshot::save(&path, &config, &domains, report) {
+    if let Err(error) = snapshot::save(&path, &config, &domains, &input_domains, report) {
         eprintln!("error saving {}: {error}", path.display());
         return ExitCode::FAILURE;
     }
