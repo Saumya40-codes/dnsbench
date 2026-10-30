@@ -99,7 +99,7 @@ impl Engine {
 
         Ok(RunReport {
             workers: 1,
-            threads: self.config.threads().get(),
+            threads: tokio::runtime::Handle::current().metrics().num_workers(),
             stats: self.stats,
             elapsed: self.started.elapsed(),
             stop_reason: self.stop_reason.expect("finished engine has a stop reason"),
@@ -114,7 +114,8 @@ impl Engine {
     ) -> Result<Self, BenchmarkError> {
         let socket = UdpSocket::from_std(shared.connect(config.server())?)?;
         let stop_updates = shared.stop_updates.subscribe();
-        let stats = RunStats::new()?;
+        let mut stats = RunStats::new()?;
+        stats.domains.reserve_domains(domains.len());
         let pending = HashMap::with_capacity(max_in_flight);
         let deadlines = VecDeque::with_capacity(max_in_flight);
         let query_buffer = Vec::with_capacity(12 + 255 + 4);
@@ -474,8 +475,7 @@ impl Engine {
             let packet = packet_len.map(|length| &self.receive_buffer[..length]);
             self.stats
                 .domains
-                .entry(index)
-                .or_default()
+                .get_or_insert(index)
                 .record(&report, packet);
         }
         self.stats.record(report)

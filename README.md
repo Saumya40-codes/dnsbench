@@ -9,7 +9,7 @@ A DNS benchmark CLI written in Rust. Send queries to a DNS server, measure respo
 ## Features
 
 - UDP queries for A, AAAA, NS, MX, TXT, SOA, CNAME, and PTR records over IPv4 or IPv6.
-- Configurable workers, runtime threads, query limits, and timeouts.
+- Configurable workers, query limits, and timeouts.
 - Query each input entry once, send a fixed number of queries, or run for a duration.
 - Latency percentiles, throughput, DNS response codes, timeouts, and socket errors.
 - Reproducible domain shuffling with a seed.
@@ -44,7 +44,7 @@ Send 10,000 queries with a larger window:
 
 ```sh
 ./target/release/dns-bench --server 1.1.1.1 --domains domains.txt \
-  --queries 10000 --max-in-flight 128 --workers 4 --threads 2
+  --queries 10000 --max-in-flight 128 --workers 4
 ```
 
 `--queries` is the total across all domains. Use `--duration 30s` instead to run for a duration. Both modes cycle through the workload. Pending queries finish or time out after sending stops.
@@ -53,12 +53,20 @@ Send 10,000 queries with a larger window:
 | --- | --- | --- |
 | `--max-in-flight` | Total outstanding queries across workers | `2` |
 | `--workers` | Logical workers, each owning a UDP socket | `2` |
-| `--threads` | Tokio runtime threads | `1` |
 | `--timeout` | Per-query timeout | `2s` |
 | `--type` | `A`, `AAAA`, `NS`, `MX`, `TXT`, `SOA`, `CNAME`, or `PTR` | `A` |
 | `--shuffle --seed 42` | Repeat a seeded permutation of the input | Off |
 
 Workers must not exceed max in flight. Server addresses accept an optional port, defaulting to `53`. Run `--help` for all options.
+
+Tokio sizes its runtime thread pool automatically. `--workers` controls logical DNS workers and sockets. The report shows the runtime thread count actually used.
+
+Override the runtime thread count with `TOKIO_WORKER_THREADS`:
+
+```sh
+TOKIO_WORKER_THREADS=2 ./target/release/dns-bench \
+  --server 1.1.1.1 --domains domains.txt
+```
 
 Use `--type MX` for mail servers or `--type TXT` for text records. Query types are case-insensitive. PTR workloads must contain reverse DNS names, such as `1.2.0.192.in-addr.arpa` for `192.0.2.1`.
 
@@ -107,17 +115,17 @@ Response latency measures the interval from the successful send attempt to recei
 
 ## Public resolver comparison
 
-Sample from one Linux host on 2026-10-25: 100 domain names, three 1,000-query runs per provider and query type, 4 workers, 2 threads, and 32 in-flight queries.
+Sample from one Linux host on 2026-10-31: 100 domain names, three 1,000-query runs per provider and query type, 4 workers, automatic runtime sizing (12 threads), and 32 in-flight queries.
 
 Latency pairs are p50 / p99 in milliseconds, each the median of three run-level values for NOERROR responses with answers. Timeouts are totals per 3,000 queries for each type.
 
 | Provider | Server | A p50 / p99 | AAAA p50 / p99 | Timeouts A / AAAA |
 | --- | --- | ---: | ---: | ---: |
-| Cloudflare | `1.1.1.1` | 8.495 / 149.422 | 8.110 / 158.466 | 0 / 2 |
-| Google | `8.8.8.8` | 26.640 / 423.887 | 31.457 / 409.207 | 32 / 30 |
-| Quad9 | `9.9.9.9` | 20.972 / 536.347 | 19.956 / 389.808 | 2 / 7 |
-| OpenDNS | `208.67.222.222` | 16.179 / 437.518 | 15.983 / 329.253 | 5 / 20 |
-| AdGuard unfiltered | `94.140.14.140` | 69.927 / 619.708 | 69.796 / 1043.857 | 81 / 61 |
+| Cloudflare | `1.1.1.1` | 12.132 / 308.281 | 13.214 / 298.320 | 14 / 18 |
+| Google | `8.8.8.8` | 22.790 / 441.450 | 22.479 / 393.216 | 90 / 75 |
+| Quad9 | `9.9.9.9` | 24.232 / 288.883 | 24.510 / 286.261 | 19 / 14 |
+| OpenDNS | `208.67.222.222` | 17.236 / 567.280 | 20.005 / 302.252 | 8 / 9 |
+| AdGuard unfiltered | `94.140.14.140` | 71.959 / 580.387 | 73.925 / 520.880 | 35 / 62 |
 
 These are observations from one network, not a global ranking. [Methodology, full results, workload, and reproduction scripts](docs/benchmarks/README.md).
 
@@ -125,7 +133,7 @@ These are observations from one network, not a global ranking. [Methodology, ful
 
 ```sh
 ./target/release/dns-bench --server 1.1.1.1 --domains domains.txt \
-  --queries 1000 --workers 2 --threads 1 --max-in-flight 16 \
+  --queries 1000 --workers 2 --max-in-flight 16 \
   --shuffle --seed 42
 ```
 

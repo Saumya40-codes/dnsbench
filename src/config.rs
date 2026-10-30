@@ -84,7 +84,7 @@ pub struct RunConfigInput {
     pub domains_path: PathBuf,
     pub max_in_flight: usize,
     pub workers: usize,
-    pub threads: usize,
+    pub threads: Option<usize>,
     pub stop_condition: StopCondition,
     pub timeout: Duration,
     pub default_query_type: QueryType,
@@ -97,7 +97,7 @@ pub struct RunConfig {
     domains_path: PathBuf,
     max_in_flight: NonZeroUsize,
     workers: NonZeroUsize,
-    threads: NonZeroUsize,
+    threads: Option<NonZeroUsize>,
     stop_condition: StopCondition,
     timeout: Duration,
     default_query_type: QueryType,
@@ -153,7 +153,10 @@ impl TryFrom<RunConfigInput> for RunConfig {
         let max_in_flight =
             NonZeroUsize::new(value.max_in_flight).ok_or(ConfigError::ZeroMaxInFlight)?;
         let workers = NonZeroUsize::new(value.workers).ok_or(ConfigError::ZeroWorkers)?;
-        let threads = NonZeroUsize::new(value.threads).ok_or(ConfigError::ZeroThreads)?;
+        let threads = value
+            .threads
+            .map(|count| NonZeroUsize::new(count).ok_or(ConfigError::ZeroThreads))
+            .transpose()?;
         if workers.get() > max_in_flight.get() {
             return Err(ConfigError::TooManyWorkers);
         }
@@ -199,7 +202,7 @@ impl RunConfig {
         self.workers
     }
 
-    pub fn threads(&self) -> NonZeroUsize {
+    pub fn threads(&self) -> Option<NonZeroUsize> {
         self.threads
     }
 
@@ -230,7 +233,7 @@ mod tests {
             domains_path: PathBuf::from("domains.txt"),
             max_in_flight: 64,
             workers: 1,
-            threads: 1,
+            threads: Some(1),
             stop_condition: StopCondition::Duration(Duration::from_secs(30)),
             timeout: Duration::from_secs(2),
             default_query_type: QueryType::A,
@@ -282,7 +285,7 @@ mod tests {
     #[test]
     fn rejects_zero_runtime_threads() {
         let mut input = valid_input();
-        input.threads = 0;
+        input.threads = Some(0);
         assert_eq!(
             RunConfig::try_from(input).unwrap_err(),
             ConfigError::ZeroThreads

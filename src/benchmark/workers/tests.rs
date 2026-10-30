@@ -21,7 +21,7 @@ fn setup(
         domains_path: "domains.txt".into(),
         max_in_flight,
         workers,
-        threads,
+        threads: Some(threads),
         stop_condition: stop,
         timeout: Duration::from_millis(200),
         default_query_type: QueryType::A,
@@ -147,7 +147,7 @@ fn workers_and_runtime_threads_are_independent_of_query_count() {
         StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
     );
     assert_eq!(config.workers().get(), 8);
-    assert_eq!(config.threads().get(), 2);
+    assert_eq!(config.threads().unwrap().get(), 2);
 }
 
 #[test]

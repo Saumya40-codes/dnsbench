@@ -105,8 +105,11 @@ pub(super) fn run_with_workers(
     domains: &[DnsName],
     workers: usize,
 ) -> Result<RunReport, BenchmarkError> {
-    let runtime = Builder::new_multi_thread()
-        .worker_threads(config.threads().get())
+    let mut builder = Builder::new_multi_thread();
+    if let Some(threads) = config.threads() {
+        builder.worker_threads(threads.get());
+    }
+    let runtime = builder
         .thread_name("dnsbench-runtime")
         .enable_all()
         .build()?;
@@ -149,17 +152,14 @@ pub(super) fn run_with_workers(
         start.send_replace(Some(Instant::now()));
         let mut first_error = None;
         let mut elapsed = Duration::ZERO;
+        let mut reports = Vec::with_capacity(workers);
         while let Some(result) = tasks.join_next().await {
             match result
                 .map_err(BenchmarkError::Worker)
                 .and_then(|result| result)
             {
                 Ok(report) => {
-                    elapsed = elapsed.max(report.elapsed);
-                    if let Err(error) = stats.merge(report.stats) {
-                        shared.cancel(StopReason::SocketError);
-                        first_error.get_or_insert(error);
-                    }
+                    reports.push(report);
                 }
                 Err(error) => {
                     shared.cancel(StopReason::SocketError);
@@ -169,6 +169,11 @@ pub(super) fn run_with_workers(
         }
         if let Some(error) = first_error {
             return Err(error);
+        }
+        // Merge only after every worker has finished receiving and timing queries.
+        for report in reports {
+            elapsed = elapsed.max(report.elapsed);
+            stats.merge(report.stats)?;
         }
         stats.peak_in_flight = shared.peak_in_flight.load(Ordering::Relaxed);
         let stop_reason = shared
