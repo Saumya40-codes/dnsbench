@@ -4,7 +4,7 @@ mod input;
 mod results;
 mod workers;
 
-pub(crate) use domain::DomainStats;
+pub(crate) use domain::{DomainStats, ResponseSample};
 pub(crate) use input::load_domains;
 
 use std::{io, time::Instant};

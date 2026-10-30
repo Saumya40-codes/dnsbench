@@ -5,14 +5,16 @@ use std::{
     time::Duration,
 };
 
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use thiserror::Error;
 
 use crate::config::{ConfigError, QueryOrder, QueryType, RunConfig, RunConfigInput, StopCondition};
+use crate::dns::name::DnsName;
 use crate::duration::parse_duration;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Benchmark a DNS server")]
+#[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 #[command(after_help = "Without --duration or --queries, each workload entry is queried once.")]
 #[command(group(
     ArgGroup::new("stop")
@@ -23,6 +25,8 @@ use crate::duration::parse_duration;
     "server", "domains", "max_in_flight", "workers", "threads", "duration", "queries", "timeout", "query_type", "shuffle", "seed"
 ])))]
 pub struct Cli {
+    #[command(subcommand)]
+    pub(crate) command: Option<Command>,
     /// DNS server IP, optionally including a port; defaults to port 53
     #[arg(long, required_unless_present = "topk", value_name = "ENDPOINT", value_parser = parse_server)]
     server: Option<SocketAddr>,
@@ -32,7 +36,7 @@ pub struct Cli {
     domains: Option<PathBuf>,
 
     /// Inspect the last run's K slowest responding domains; 0 produces no output
-    #[arg(long, value_name = "K", conflicts_with = "run")]
+    #[arg(long, value_name = "K", conflicts_with = "run", hide = true)]
     pub(crate) topk: Option<usize>,
 
     /// Override the saved-run file used for saving or inspection
@@ -74,6 +78,33 @@ pub struct Cli {
     /// Seed for reproducible shuffled traversal; requires --shuffle
     #[arg(long, requires = "shuffle")]
     seed: Option<u64>,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum Command {
+    /// Inspect a saved benchmark without sending DNS queries
+    Get(GetArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("selection").required(true).multiple(false)
+    .args(["topk", "bottomk", "limit", "domain"])))]
+pub(crate) struct GetArgs {
+    /// Override the saved-run file to inspect
+    #[arg(long, value_name = "PATH")]
+    pub(crate) results_file: Option<PathBuf>,
+    /// Domains ranked by their slowest response, descending
+    #[arg(long, value_name = "K")]
+    pub(crate) topk: Option<usize>,
+    /// Domains ranked by their fastest response, ascending
+    #[arg(long, value_name = "K")]
+    pub(crate) bottomk: Option<usize>,
+    /// First K unique domains in workload order
+    #[arg(long, alias = "limitk", value_name = "K")]
+    pub(crate) limit: Option<usize>,
+    /// Answer records from this domain's slowest retained response
+    #[arg(long, value_name = "NAME", value_parser = DnsName::parse)]
+    pub(crate) domain: Option<DnsName>,
 }
 
 #[derive(Debug, Error)]
@@ -156,6 +187,50 @@ mod tests {
     #[test]
     fn command_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn get_requires_one_selector_and_rejects_benchmark_arguments() {
+        for flag in ["--topk", "--bottomk", "--limit", "--limitk"] {
+            let cli =
+                Cli::try_parse_from(["dns-bench", "get", flag, "5", "--results-file", "run.zst"])
+                    .unwrap();
+            assert!(matches!(cli.command, Some(Command::Get(_))));
+            let Some(Command::Get(args)) = cli.command else {
+                panic!("missing get")
+            };
+            assert_eq!(args.results_file.unwrap(), PathBuf::from("run.zst"));
+        }
+        let cli = Cli::try_parse_from([
+            "dns-bench",
+            "get",
+            "--results-file",
+            "run.zst",
+            "--domain",
+            "EXAMPLE.COM.",
+        ])
+        .unwrap();
+        let Some(Command::Get(args)) = cli.command else {
+            panic!("missing get")
+        };
+        assert_eq!(args.domain.unwrap().as_str(), "example.com");
+        for args in [
+            vec!["dns-bench", "get"],
+            vec!["dns-bench", "get", "--topk", "2", "--bottomk", "2"],
+            vec![
+                "dns-bench",
+                "get",
+                "--domain",
+                "example.com",
+                "--limit",
+                "2",
+            ],
+            vec!["dns-bench", "get", "--domain", "a..com"],
+            vec!["dns-bench", "get", "--topk", "2", "--server", "1.1.1.1"],
+            vec!["dns-bench", "--server", "1.1.1.1", "get", "--topk", "2"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 
     #[test]

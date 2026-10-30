@@ -1,13 +1,15 @@
+use std::sync::Arc;
+
 use crate::dns::{
     message::ResponseSummary,
     udp::{QueryOutcome, QueryReport},
 };
 
-#[derive(Debug)]
-pub(crate) struct SlowestResponse {
+#[derive(Debug, Clone)]
+pub(crate) struct ResponseSample {
     pub(crate) elapsed_ns: u64,
     pub(crate) summary: ResponseSummary,
-    pub(crate) packet: Vec<u8>,
+    pub(crate) packet: Arc<[u8]>,
 }
 
 #[derive(Debug, Default)]
@@ -17,7 +19,8 @@ pub(crate) struct DomainStats {
     pub(crate) responses: u64,
     pub(crate) timeouts: u64,
     pub(crate) socket_errors: u64,
-    pub(crate) slowest: Option<SlowestResponse>,
+    pub(crate) slowest: Option<ResponseSample>,
+    pub(crate) fastest: Option<ResponseSample>,
 }
 
 impl DomainStats {
@@ -28,16 +31,29 @@ impl DomainStats {
             QueryOutcome::Response(summary) => {
                 self.responses += 1;
                 let elapsed_ns = report.elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
-                if self
+                let slower = self
                     .slowest
                     .as_ref()
-                    .is_none_or(|sample| elapsed_ns > sample.elapsed_ns)
-                {
-                    self.slowest = Some(SlowestResponse {
+                    .is_none_or(|sample| elapsed_ns > sample.elapsed_ns);
+                let faster = self
+                    .fastest
+                    .as_ref()
+                    .is_none_or(|sample| elapsed_ns < sample.elapsed_ns);
+                if slower || faster {
+                    let sample = ResponseSample {
                         elapsed_ns,
                         summary: *summary,
-                        packet: packet.unwrap_or_default().to_vec(),
-                    });
+                        packet: Arc::from(packet.unwrap_or_default()),
+                    };
+                    match (slower, faster) {
+                        (true, true) => {
+                            self.fastest = Some(sample.clone());
+                            self.slowest = Some(sample);
+                        }
+                        (true, false) => self.slowest = Some(sample),
+                        (false, true) => self.fastest = Some(sample),
+                        (false, false) => unreachable!(),
+                    }
                 }
             }
             QueryOutcome::Timeout => self.timeouts += 1,
@@ -58,6 +74,14 @@ impl DomainStats {
                 .is_none_or(|current| sample.elapsed_ns > current.elapsed_ns)
         {
             self.slowest = Some(sample);
+        }
+        if let Some(sample) = other.fastest
+            && self
+                .fastest
+                .as_ref()
+                .is_none_or(|current| sample.elapsed_ns < current.elapsed_ns)
+        {
+            self.fastest = Some(sample);
         }
     }
 }
@@ -85,6 +109,12 @@ mod tests {
                 },
                 Some(packet),
             );
+            if elapsed == 20 {
+                assert!(Arc::ptr_eq(
+                    &stats.slowest.as_ref().unwrap().packet,
+                    &stats.fastest.as_ref().unwrap().packet,
+                ));
+            }
         }
         stats.record(
             &QueryReport {
@@ -99,6 +129,9 @@ mod tests {
         assert_eq!(stats.timeouts, 1);
         let sample = stats.slowest.unwrap();
         assert_eq!(sample.elapsed_ns, 20_000_000);
-        assert_eq!(sample.packet, b"slow");
+        assert_eq!(sample.packet.as_ref(), b"slow");
+        let fastest = stats.fastest.unwrap();
+        assert_eq!(fastest.elapsed_ns, 5_000_000);
+        assert_eq!(fastest.packet.as_ref(), b"fast");
     }
 }

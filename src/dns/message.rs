@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 mod records;
-pub(crate) use records::{Record, decode_records};
+pub(crate) use records::{Record, Section, decode_records};
 
 use crate::config::QueryType;
 

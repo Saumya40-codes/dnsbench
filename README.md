@@ -80,7 +80,7 @@ Snapshots are saved in `data/dnsbench/`. Inspect the saved run:
 ```sh
 docker run --rm --network none \
   -v "$(pwd)/data:/state:ro" \
-  dnsbench --topk 2
+  dnsbench get --topk 2
 ```
 
 ## Inspect a run
@@ -88,10 +88,18 @@ docker run --rm --network none \
 Each run saves a compressed snapshot after measurement finishes. Inspect the two slowest responding domains without sending more queries:
 
 ```sh
-./target/release/dns-bench --topk 2
+./target/release/dns-bench get --topk 2
 ```
 
-Domains are ranked by their slowest recorded response. Duplicate domain entries are combined, and domains without a response are excluded. `--topk 0` produces no output.
+```sh
+./target/release/dns-bench get --bottomk 5
+./target/release/dns-bench get --limit 5
+./target/release/dns-bench get --domain example.com
+```
+
+`--topk` ranks each domain's slowest response, descending. `--bottomk` ranks its fastest response, ascending. Both exclude domains without responses. `--limit` lists the first K unique domains in original workload order, including those without responses. Duplicate input names are combined.
+
+`--domain` prints only Answer-section records from that domain's slowest retained response. Matching ignores case and a trailing dot. All `get` commands inspect saved data without sending DNS queries.
 
 The save location is printed after each run. Use `--results-file PATH` when benchmarking or inspecting to select another snapshot. The default snapshot is replaced by the next run.
 
@@ -124,7 +132,7 @@ These are observations from one network, not a global ranking. [Methodology, ful
 ![Benchmark results](docs/dnsbench-run.png)
 
 ```sh
-./target/release/dns-bench --topk 5
+./target/release/dns-bench get --topk 5
 ```
 
 ![Slowest domains](docs/dnsbench-topk.png)
