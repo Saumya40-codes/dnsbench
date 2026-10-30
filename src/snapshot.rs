@@ -140,11 +140,7 @@ pub(crate) fn save(
             .map_err(io::Error::other)?
             .as_secs(),
         server: config.server(),
-        query_type: match config.default_query_type() {
-            QueryType::A => "A",
-            QueryType::Aaaa => "AAAA",
-        }
-        .into(),
+        query_type: config.default_query_type().to_string(),
         mode: match config.stop_condition() {
             StopCondition::Once => "once".into(),
             StopCondition::QueryCount(count) => format!("{} queries", count.get()),
@@ -277,7 +273,7 @@ pub(crate) fn inspect(path: &Path, k: usize) -> Result<Option<Inspection>, Snaps
     if header.unique_domains > header.input_entries || header.input_entries == 0 {
         return Err(SnapshotError::Invalid("inconsistent domain counts".into()));
     }
-    if !matches!(header.query_type.as_str(), "A" | "AAAA")
+    if header.query_type.parse::<QueryType>().is_err()
         || header.stop_reason.chars().any(char::is_control)
     {
         return Err(SnapshotError::Invalid("invalid run metadata".into()));

@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     config::QueryType,
-    dns::{message::encode_query, name::DnsName},
+    dns::{
+        message::{encode_query, validate_response},
+        name::DnsName,
+    },
 };
 
 fn response(answers: u16, authority: u16, additional: u16) -> Vec<u8> {
@@ -86,5 +89,124 @@ fn malformed_address_and_name_data_are_rejected_without_panics() {
     }
     for len in 0..12 {
         assert!(decode_records(&vec![0; len]).is_err());
+    }
+}
+
+#[test]
+fn decodes_mx_soa_and_binary_txt_records() {
+    let mut packet = response(4, 0, 0);
+    let query = packet.clone();
+    record(
+        &mut packet,
+        15,
+        &[0, 10, 4, b'm', b'a', b'i', b'l', 0xC0, 0x0C],
+    );
+    record(&mut packet, 15, &[0, 0, 0]);
+    let mut soa = vec![2, b'n', b's', 0xC0, 0x0C, 10];
+    soa.extend_from_slice(b"hostmaster");
+    soa.extend_from_slice(&[0xC0, 0x0C]);
+    for number in [u32::MAX, 3600, 600, 86400, 60] {
+        soa.extend_from_slice(&number.to_be_bytes());
+    }
+    record(&mut packet, 6, &soa);
+    record(
+        &mut packet,
+        16,
+        &[
+            5, b'h', b'e', b'l', b'l', b'o', 0, 6, b'a', b'"', b'\\', 0, 27, 255,
+        ],
+    );
+    let records = decode_records(&packet).unwrap();
+    assert_eq!(records[0].value, "10 mail.example.com.");
+    assert_eq!(records[1].value, "0 .");
+    assert_eq!(
+        records[2].value,
+        "ns.example.com. hostmaster.example.com. 4294967295 3600 600 86400 60"
+    );
+    assert_eq!(records[3].value, r#""hello" "" "a\"\\\000\027\255""#);
+    assert!(
+        records[0]
+            .to_string()
+            .contains("IN MX 10 mail.example.com.")
+    );
+    assert!(records[2].to_string().contains("IN SOA ns.example.com."));
+    assert!(records[3].to_string().contains("IN TXT"));
+    let mut query = query;
+    query[2..4].copy_from_slice(&0x0100u16.to_be_bytes());
+    query[6..8].copy_from_slice(&0u16.to_be_bytes());
+    assert!(validate_response(&query, &packet).is_ok());
+}
+
+#[test]
+fn rejects_malformed_known_rdata_even_when_truncated_flag_is_set() {
+    let mut short_soa = vec![0, 0];
+    short_soa.extend_from_slice(&[0; 19]);
+    let mut long_soa = vec![0, 0];
+    long_soa.extend_from_slice(&[0; 21]);
+    for (kind, data) in [
+        (15, vec![]),
+        (15, vec![0, 10]),
+        (15, vec![0, 10, 0, 99]),
+        (15, vec![0, 10, 0xC0, 0xFF]),
+        (6, short_soa),
+        (6, long_soa),
+        (6, vec![0xC0, 0x0C]),
+        (16, vec![]),
+        (16, vec![2, b'a']),
+        (16, vec![0, 1]),
+    ] {
+        for flags in [0x8180u16, 0x8380] {
+            let mut packet = response(1, 0, 0);
+            let mut query = packet.clone();
+            query[2..4].copy_from_slice(&0x0100u16.to_be_bytes());
+            query[6..8].fill(0);
+            packet[2..4].copy_from_slice(&flags.to_be_bytes());
+            record(&mut packet, kind, &data);
+            assert!(
+                validate_response(&query, &packet).is_err(),
+                "accepted type {kind}: {data:?}"
+            );
+            assert!(
+                decode_records(&packet).is_err(),
+                "decoded type {kind}: {data:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn txt_accepts_empty_strings_and_maximum_length_strings() {
+    for (data, expected) in [
+        (vec![0], "\"\"".to_owned()),
+        (
+            {
+                let mut data = vec![255];
+                data.extend_from_slice(&[b'a'; 255]);
+                data
+            },
+            format!("\"{}\"", "a".repeat(255)),
+        ),
+    ] {
+        let mut packet = response(1, 0, 0);
+        record(&mut packet, 16, &data);
+        assert_eq!(decode_records(&packet).unwrap()[0].value, expected);
+    }
+}
+
+#[test]
+fn mutations_of_mx_soa_and_txt_packets_do_not_panic() {
+    let mut soa = vec![0, 0];
+    soa.extend_from_slice(&[0; 20]);
+    for (kind, data) in [(15, vec![0, 10, 0xC0, 0x0C]), (6, soa), (16, vec![1, b'a'])] {
+        let mut packet = response(1, 0, 0);
+        record(&mut packet, kind, &data);
+        for index in 0..packet.len() {
+            let original = packet[index];
+            for byte in 0..=u8::MAX {
+                packet[index] = byte;
+                let _ = decode_records(&packet);
+            }
+            packet[index] = original;
+        }
     }
 }
