@@ -123,12 +123,15 @@ pub(super) fn run_with_workers(
         for index in 0..workers {
             let quota = config.max_in_flight().get() / workers
                 + usize::from(index < config.max_in_flight().get() % workers);
-            engines.push(Engine::new(
-                Arc::clone(&config),
-                Arc::clone(&domains),
-                Arc::clone(&shared),
-                quota,
-            )?);
+            engines.push(
+                Engine::new(
+                    Arc::clone(&config),
+                    Arc::clone(&domains),
+                    Arc::clone(&shared),
+                    quota,
+                )
+                .await?,
+            );
         }
 
         let (start, ready) = watch::channel(None);

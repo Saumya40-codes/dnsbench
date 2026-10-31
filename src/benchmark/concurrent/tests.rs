@@ -20,6 +20,7 @@ fn setup(max_in_flight: usize, stop: StopCondition, timeout: Duration) -> (UdpSo
         .unwrap();
     let config = RunConfig::try_from(RunConfigInput {
         server: socket.local_addr().unwrap(),
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight,
         workers: 1,
@@ -238,6 +239,7 @@ async fn slow_first_query_does_not_retain_completed_id_history() {
         Arc::clone(&shared),
         config.max_in_flight().get(),
     )
+    .await
     .unwrap();
     for id in [0, 999] {
         engine.pending.insert(
@@ -269,6 +271,7 @@ async fn blocked_send_has_a_deadline_and_does_not_cancel_sent_queries() {
         Arc::clone(&shared),
         config.max_in_flight().get(),
     )
+    .await
     .unwrap();
     engine.pending.insert(
         0,
@@ -307,6 +310,7 @@ async fn a_write_readiness_event_resumes_a_blocked_sender() {
         Arc::clone(&shared),
         config.max_in_flight().get(),
     )
+    .await
     .unwrap();
     engine.writable = false;
     engine.send_started = Some(Instant::now());
@@ -323,8 +327,9 @@ async fn cancellation_wakes_a_worker_waiting_on_a_long_query_deadline() {
         Duration::from_secs(60),
     );
     let shared = Arc::new(Shared::new(&config, names().len()));
-    let mut engine =
-        Engine::new(Arc::new(config), Arc::from(names()), Arc::clone(&shared), 2).unwrap();
+    let mut engine = Engine::new(Arc::new(config), Arc::from(names()), Arc::clone(&shared), 2)
+        .await
+        .unwrap();
     for id in [0, 1] {
         engine.pending.insert(
             id,
@@ -361,7 +366,9 @@ async fn a_worker_sees_cancellation_that_happened_before_it_subscribed() {
     );
     let shared = Arc::new(Shared::new(&config, names().len()));
     shared.cancel(StopReason::SocketError);
-    let mut engine = Engine::new(Arc::new(config), Arc::from(names()), shared, 2).unwrap();
+    let mut engine = Engine::new(Arc::new(config), Arc::from(names()), shared, 2)
+        .await
+        .unwrap();
     assert!(!engine.step().await.unwrap());
     assert_eq!(engine.stop_reason, Some(StopReason::SocketError));
     assert!(engine.pending.is_empty());
@@ -375,8 +382,9 @@ async fn captured_receive_time_excludes_later_processing_from_latency() {
         Duration::from_secs(1),
     );
     let shared = Arc::new(Shared::new(&config, names().len()));
-    let mut engine =
-        Engine::new(Arc::new(config), Arc::from(names()), Arc::clone(&shared), 2).unwrap();
+    let mut engine = Engine::new(Arc::new(config), Arc::from(names()), Arc::clone(&shared), 2)
+        .await
+        .unwrap();
     let mut packet = Vec::new();
     encode_query(&engine.domains[0], 7, QueryType::A, true, &mut packet);
     packet[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
@@ -437,6 +445,7 @@ fn concurrent_aaaa_queries_work_over_ipv6() {
         .unwrap();
     let config = RunConfig::try_from(RunConfigInput {
         server: socket.local_addr().unwrap(),
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight: 2,
         workers: 1,
@@ -506,4 +515,214 @@ fn socket_failure_accounts_for_pending_queries_and_stops() {
     assert!(report.stats.sent < 20);
     assert!(report.stats.socket_errors >= report.stats.sent);
     assert_eq!(report.stats.attempted, report.stats.socket_errors);
+}
+
+async fn local_dot_engine(
+    address: SocketAddr,
+    tls: Arc<tokio_rustls::rustls::ClientConfig>,
+    timeout: Duration,
+) -> Engine {
+    let (_, udp_config) = setup(3, StopCondition::Once, timeout);
+    let shared = Arc::new(Shared::new(&udp_config, 3));
+    let mut engine = Engine::new(Arc::new(udp_config), Arc::from(names()), shared, 3)
+        .await
+        .unwrap();
+    let config = RunConfig::try_from(RunConfigInput {
+        server: address,
+        transport: Transport::Dot {
+            server_name: "dot.test".into(),
+        },
+        domains_path: "domains.txt".into(),
+        max_in_flight: 3,
+        workers: 1,
+        threads: Some(1),
+        stop_condition: StopCondition::Once,
+        timeout,
+        default_query_type: QueryType::A,
+        order: QueryOrder::Sequential,
+    })
+    .unwrap();
+    engine.socket = Socket::connect_with_config(&config, tls, "dot.test".into())
+        .await
+        .unwrap();
+    engine.config = Arc::new(config);
+    engine.stats.tls_connections = 1;
+    engine
+}
+
+#[tokio::test]
+async fn dot_pipelines_and_validates_out_of_order_responses_on_one_connection() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    let (tls, acceptor) = crate::dns::transport::tests::tls_configs();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut stream = acceptor
+            .accept(listener.accept().await.unwrap().0)
+            .await
+            .unwrap();
+        let mut replies = Vec::new();
+        for id in 0..3u16 {
+            let length = stream.read_u16().await.unwrap();
+            let mut packet = vec![0; usize::from(length)];
+            stream.read_exact(&mut packet).await.unwrap();
+            assert_eq!(u16::from_be_bytes([packet[0], packet[1]]), id);
+            packet[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+            replies.push(packet);
+        }
+        let mut frames = Vec::new();
+        // A wrong question with the right ID must not complete that pending query.
+        let mut wrong = replies[0].clone();
+        wrong[13] = b'z';
+        frames.extend_from_slice(&(wrong.len() as u16).to_be_bytes());
+        frames.extend_from_slice(&wrong);
+        for packet in replies.into_iter().rev() {
+            frames.extend_from_slice(&(packet.len() as u16).to_be_bytes());
+            frames.extend_from_slice(&packet);
+        }
+        stream.write_all(&frames[..1]).await.unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        stream.write_all(&frames[1..]).await.unwrap();
+        stream.flush().await.unwrap();
+    });
+    let engine = local_dot_engine(address, tls, Duration::from_secs(2)).await;
+    let report = tokio::time::timeout(Duration::from_secs(3), engine.run(Instant::now()))
+        .await
+        .unwrap()
+        .unwrap();
+    server.await.unwrap();
+    assert_eq!(report.stats.sent, 3);
+    assert_eq!(report.stats.responses, 3);
+    assert_eq!(report.stats.timeouts, 0);
+    assert_eq!(report.stats.socket_errors, 0);
+    assert_eq!(report.stats.rejected.mismatched, 1);
+    assert_eq!(report.stats.peak_in_flight, 3);
+    assert_eq!(report.stats.domains.into_entries().count(), 3);
+}
+
+#[tokio::test]
+async fn dot_partial_frame_does_not_reset_query_deadlines() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    let (tls, acceptor) = crate::dns::transport::tests::tls_configs();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut stream = acceptor
+            .accept(listener.accept().await.unwrap().0)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            let length = stream.read_u16().await.unwrap();
+            stream
+                .read_exact(&mut vec![0; usize::from(length)])
+                .await
+                .unwrap();
+        }
+        stream.write_all(&[0, 29, 0]).await.unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+    let engine = local_dot_engine(address, tls, Duration::from_millis(40)).await;
+    let report = tokio::time::timeout(Duration::from_secs(2), engine.run(Instant::now()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.stats.sent, 3);
+    assert_eq!(report.stats.timeouts, 3);
+    assert_eq!(report.stats.socket_errors, 0);
+    assert_eq!(report.stats.responses, 0);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn dot_id_exhaustion_drains_then_opens_a_new_tls_connection() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    let (tls, acceptor) = crate::dns::transport::tests::tls_configs();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for ids in [vec![u16::MAX], vec![0, 1]] {
+            let mut stream = acceptor
+                .accept(listener.accept().await.unwrap().0)
+                .await
+                .unwrap();
+            assert_eq!(stream.get_ref().1.server_name(), Some("dot.test"));
+            let mut responses = Vec::new();
+            for expected in ids {
+                let length = stream.read_u16().await.unwrap();
+                let mut packet = vec![0; usize::from(length)];
+                stream.read_exact(&mut packet).await.unwrap();
+                assert_eq!(u16::from_be_bytes([packet[0], packet[1]]), expected);
+                packet[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+                responses.push(packet);
+            }
+            for packet in responses.into_iter().rev() {
+                stream.write_u16(packet.len() as u16).await.unwrap();
+                stream.write_all(&packet).await.unwrap();
+            }
+            stream.flush().await.unwrap();
+        }
+    });
+    let mut engine = local_dot_engine(address, tls, Duration::from_secs(2)).await;
+    engine.next_id = u32::from(u16::MAX);
+    let report = tokio::time::timeout(Duration::from_secs(3), engine.run(Instant::now()))
+        .await
+        .unwrap()
+        .unwrap();
+    server.await.unwrap();
+    assert_eq!(report.stats.sent, 3);
+    assert_eq!(report.stats.responses, 3);
+    assert_eq!(report.stats.socket_errors, 0);
+    assert_eq!(report.stats.socket_rotations, 1);
+    assert_eq!(report.stats.tls_connections, 2);
+}
+
+#[tokio::test]
+async fn completing_the_query_budget_at_id_exhaustion_does_not_reconnect() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    let (tls, acceptor) = crate::dns::transport::tests::tls_configs();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut stream = acceptor
+            .accept(listener.accept().await.unwrap().0)
+            .await
+            .unwrap();
+        let length = stream.read_u16().await.unwrap();
+        let mut packet = vec![0; usize::from(length)];
+        stream.read_exact(&mut packet).await.unwrap();
+        packet[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+        stream.write_u16(length).await.unwrap();
+        stream.write_all(&packet).await.unwrap();
+        stream.flush().await.unwrap();
+        // Dropping the listener ensures an unnecessary reconnect would fail the run.
+    });
+    let mut engine = local_dot_engine(address, tls, Duration::from_secs(2)).await;
+    engine.next_id = u32::from(u16::MAX);
+    engine.domains = Arc::from([DnsName::parse("a.com").unwrap()]);
+    engine.shared = Arc::new(Shared::new(&engine.config, 1));
+    engine.stop_updates = engine.shared.stop_updates.subscribe();
+    let report = tokio::time::timeout(Duration::from_secs(3), engine.run(Instant::now()))
+        .await
+        .unwrap()
+        .unwrap();
+    server.await.unwrap();
+    assert_eq!(report.stats.sent, 1);
+    assert_eq!(report.stats.responses, 1);
+    assert_eq!(report.stats.socket_errors, 0);
+    assert_eq!(report.stats.socket_rotations, 0);
+    assert_eq!(report.stats.tls_connections, 1);
 }

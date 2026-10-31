@@ -8,7 +8,7 @@ A DNS benchmark CLI written in Rust. Send queries to a DNS server, measure respo
 
 ## Features
 
-- UDP queries for A, AAAA, NS, MX, TXT, SOA, CNAME, and PTR records over IPv4 or IPv6.
+- UDP and DNS over TLS queries for A, AAAA, NS, MX, TXT, SOA, CNAME, and PTR records over IPv4 or IPv6.
 - Configurable workers, query limits, and timeouts.
 - Query each input entry once, send a fixed number of queries, or run for a duration.
 - Latency percentiles, throughput, DNS response codes, timeouts, and socket errors.
@@ -52,12 +52,12 @@ Send 10,000 queries with a larger window:
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `--max-in-flight` | Total outstanding queries across workers | `2` |
-| `--workers` | Logical workers, each owning a UDP socket | `2` |
+| `--workers` | Logical workers, each owning a socket or TLS connection | `2` |
 | `--timeout` | Per-query timeout | `2s` |
 | `--type` | `A`, `AAAA`, `NS`, `MX`, `TXT`, `SOA`, `CNAME`, or `PTR` | `A` |
 | `--shuffle --seed 42` | Repeat a seeded permutation of the input | Off |
 
-Workers must not exceed max in flight. Server addresses accept an optional port, defaulting to `53`. Run `--help` for all options.
+Workers must not exceed max in flight. Server addresses accept an optional port, defaulting to `53` for UDP and `853` for DoT. Run `--help` for all options.
 
 Tokio sizes its runtime thread pool automatically. `--workers` controls logical DNS workers and sockets. The report shows the runtime thread count actually used.
 
@@ -71,6 +71,24 @@ TOKIO_WORKER_THREADS=2 ./target/release/dns-bench \
 Use `--type MX` for mail servers or `--type TXT` for text records. Query types are case-insensitive. PTR workloads must contain reverse DNS names, such as `1.2.0.192.in-addr.arpa` for `192.0.2.1`.
 
 Saved results decode all supported record types, including MX preferences, SOA fields, and separate quoted TXT strings. Truncated UDP responses are reported without a TCP retry.
+
+## DNS over TLS
+
+```sh
+./target/release/dns-bench --server 1.1.1.1 --domains domains.txt \
+  --transport dot --tls-server-name cloudflare-dns.com \
+  --queries 1000 --workers 2 --max-in-flight 16
+```
+
+Each worker reuses a verified TLS connection and pipelines DNS queries. The TLS
+name is used for certificate verification and SNI. Public Mozilla trust roots are
+embedded, including in Docker. There is no fallback to unencrypted DNS.
+
+Initial TCP/TLS setup finishes before measurement. The report lists connection
+count and total setup time separately. Query RTT includes TLS processing,
+transport buffering, socket queueing, and task scheduling. Connections rotate
+before transaction IDs are reused; later setup also contributes to elapsed time.
+A failed connection stops the run; queries are not automatically retried.
 
 ## Docker
 

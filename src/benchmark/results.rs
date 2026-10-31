@@ -9,7 +9,7 @@ use crate::dns::{
 
 use super::{BenchmarkError, domain_store::DomainStore};
 
-pub(crate) const RESPONSE_TIMING: &str = "Client-observed RTT: successful send attempt to matching receive, captured before validation/reporting. Includes socket queueing and scheduling.";
+pub(crate) const RESPONSE_TIMING: &str = "Client-observed RTT: transport submission to matching receive, captured before validation/reporting. Includes transport buffering, socket queueing and scheduling; DoT also includes TLS processing.";
 
 pub(crate) const LATENCY_GROUPS: [&str; 6] = [
     "NOERROR with answers",
@@ -59,6 +59,8 @@ pub(crate) struct RunStats {
     pub(crate) rejected: RejectedPackets,
     pub(crate) rcodes: [u64; 16],
     pub(crate) socket_rotations: u64,
+    pub(crate) tls_connections: u64,
+    pub(crate) tls_setup: Duration,
     pub(crate) peak_in_flight: usize,
     pub(crate) last_socket_error: Option<String>,
     pub(crate) latencies: [Histogram<u64>; 6],
@@ -83,6 +85,8 @@ impl RunStats {
             .malformed
             .saturating_add(other.rejected.malformed);
         self.socket_rotations += other.socket_rotations;
+        self.tls_connections += other.tls_connections;
+        self.tls_setup += other.tls_setup;
         if other.last_socket_error.is_some() {
             self.last_socket_error = other.last_socket_error;
         }
@@ -108,6 +112,8 @@ impl RunStats {
             rejected: RejectedPackets::default(),
             rcodes: [0; 16],
             socket_rotations: 0,
+            tls_connections: 0,
+            tls_setup: Duration::ZERO,
             peak_in_flight: 0,
             last_socket_error: None,
             latencies: std::array::from_fn(|_| histogram.clone()),
@@ -175,6 +181,18 @@ impl fmt::Display for RunReport {
         writeln!(f, "\nStop: {}", self.stop_reason)?;
         writeln!(f, "Workers: {}", self.workers)?;
         writeln!(f, "Runtime threads: {}", self.threads)?;
+        if stats.tls_connections > 0 {
+            writeln!(
+                f,
+                "TLS connections: {} | Total TCP/TLS setup: {:.3}ms",
+                stats.tls_connections,
+                stats.tls_setup.as_secs_f64() * 1000.0
+            )?;
+            writeln!(
+                f,
+                "Initial TCP/TLS setup is excluded from query RTT and measured elapsed; later connection rotations are included in elapsed."
+            )?;
+        }
         writeln!(
             f,
             "Measured elapsed: {:.3}s (includes any final query completion)",
