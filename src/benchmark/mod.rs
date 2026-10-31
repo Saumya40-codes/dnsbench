@@ -1,5 +1,6 @@
 mod concurrent;
 mod domain;
+mod domain_store;
 mod input;
 mod results;
 mod workers;
@@ -93,7 +94,8 @@ pub(crate) fn run(
         }
     }
 
-    if config.max_in_flight().get() > 1 || config.threads().get() > 1 {
+    if config.max_in_flight().get() > 1 || config.threads().is_some_and(|threads| threads.get() > 1)
+    {
         return workers::run(config, domains);
     }
 
@@ -102,6 +104,7 @@ pub(crate) fn run(
     let port = usize::from(client.local_addr()?.port());
     used_ports[port / 64] |= 1u64 << (port % 64);
     let mut stats = RunStats::new()?;
+    stats.domains.reserve_domains(domains.len());
     let mut next_id = 0u32;
     let mut domain_index = 0;
     let started = Instant::now();
@@ -177,8 +180,7 @@ pub(crate) fn run(
             matches!(report.outcome, QueryOutcome::Response(_)).then(|| client.response_packet());
         stats
             .domains
-            .entry(domain_index)
-            .or_default()
+            .get_or_insert(domain_index)
             .record(&report, packet);
         stats.record(report)?;
         domain_index = (domain_index + 1) % domains.len();

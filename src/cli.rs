@@ -22,7 +22,7 @@ use crate::duration::parse_duration;
     .args(["duration", "queries"])
 ))]
 #[command(group(ArgGroup::new("run").multiple(true).args([
-    "server", "domains", "max_in_flight", "workers", "threads", "duration", "queries", "timeout", "query_type", "shuffle", "seed"
+    "server", "domains", "max_in_flight", "workers", "duration", "queries", "timeout", "query_type", "shuffle", "seed"
 ])))]
 pub struct Cli {
     #[command(subcommand)]
@@ -50,10 +50,6 @@ pub struct Cli {
     /// Number of logical DNS workers, each owning a socket and histogram
     #[arg(long, default_value_t = 2, value_name = "COUNT")]
     workers: usize,
-
-    /// Number of Tokio runtime threads executing the logical workers
-    #[arg(long, default_value_t = 1, value_name = "COUNT")]
-    threads: usize,
 
     /// How long to send queries (integer followed by ns, us, ms, s, m, or h)
     #[arg(long, value_name = "TIME", value_parser = parse_duration)]
@@ -144,7 +140,7 @@ impl Cli {
             domains_path: domains,
             max_in_flight: self.max_in_flight,
             workers: self.workers,
-            threads: self.threads,
+            threads: None,
             stop_condition,
             timeout: self.timeout,
             default_query_type: self.query_type,
@@ -320,7 +316,7 @@ mod tests {
             .unwrap();
         assert_eq!(config.max_in_flight().get(), 2);
         assert_eq!(config.workers().get(), 2);
-        assert_eq!(config.threads().get(), 1);
+        assert_eq!(config.threads(), None);
         assert_eq!(config.timeout(), Duration::from_secs(2));
         assert_eq!(config.order(), QueryOrder::Sequential);
         assert_eq!(
@@ -336,11 +332,11 @@ mod tests {
             .into_config()
             .unwrap();
         assert_eq!(config.workers().get(), 2);
-        assert_eq!(config.threads().get(), 1);
+        assert_eq!(config.threads(), None);
     }
 
     #[test]
-    fn parses_independent_worker_and_thread_counts() {
+    fn worker_count_does_not_override_runtime_defaults() {
         let config = parse(&[
             "--queries",
             "100",
@@ -348,15 +344,14 @@ mod tests {
             "64",
             "--workers",
             "8",
-            "--threads",
-            "2",
         ])
         .unwrap()
         .into_config()
         .unwrap();
         assert_eq!(config.max_in_flight().get(), 64);
         assert_eq!(config.workers().get(), 8);
-        assert_eq!(config.threads().get(), 2);
+        assert_eq!(config.threads(), None);
+        assert!(parse(&["--threads", "2"]).is_err());
     }
 
     #[test]

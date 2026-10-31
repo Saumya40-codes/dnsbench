@@ -1,13 +1,13 @@
 # Public resolver comparison
 
-Measured on 2026-10-25, 07:00:47 to 07:03:04 UTC, from one Linux x86_64 host with an Intel Core i5-12450H. City, ISP, and connection type were not recorded. These results describe this host's network path at that time and are not a global provider ranking.
+Measured on 2026-10-31, 05:41:14 to 05:43:48 UTC, from one Linux x86_64 host with an Intel Core i5-12450H. City, ISP, and connection type were not recorded. These results describe this host's network path at that time and are not a global provider ranking.
 
 ## Setup
 
-- Native release binary, Rust 1.95.0, source commit `7e455bf2cb2eb8f98104d957484e9f431778dccd`.
+- Native release binary, Rust 1.95.0, built with `cargo build --release --locked`.
 - [100 unique names](domains.txt) spanning developer tools, cloud/CDN services, media, universities, public institutions, and regional sites. Includes apex and `www` names from some of the same zones.
 - A and AAAA questions, both sent over IPv4 UDP to port 53. No EDNS, retries, or TCP fallback.
-- 4 workers, 2 runtime threads, 32 outstanding queries, 2-second timeout.
+- 4 workers, automatic Tokio sizing (12 runtime threads recorded), 32 outstanding queries, 2-second timeout.
 - One 100-query warmup per provider and query type, followed by three 1,000-query measured runs. Each measured run queries every name ten times.
 - Each run is sequential relative to other providers. Provider order rotates by two positions each round. Shuffle seeds are 42, 43, and 44, shared across providers in each round.
 - All A runs precede AAAA runs. Warmups are excluded from the tables. Resolver caches are not flushed or controlled, and the host is not isolated from other activity.
@@ -34,31 +34,33 @@ Replies, timeouts, SERVFAIL, and rejected-packet counts are summed across the th
 
 | Provider | p50 ms | p95 ms | p99 ms | Response QPS | Replies | Timeouts | SERVFAIL | Rejected |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Cloudflare | 8.495 | 23.937 | 149.422 | 1410.14 | 3000/3000 | 0 | 30 | 0 |
-| Google | 26.640 | 131.858 | 423.887 | 255.62 | 2968/3000 | 32 | 1 | 16 |
-| Quad9 | 20.972 | 214.434 | 536.347 | 351.45 | 2998/3000 | 2 | 30 | 0 |
-| OpenDNS | 16.179 | 143.131 | 437.518 | 393.15 | 2995/3000 | 5 | 28 | 0 |
-| AdGuard unfiltered | 69.927 | 301.990 | 619.708 | 155.30 | 2919/3000 | 81 | 29 | 25 |
+| Cloudflare | 12.132 | 224.002 | 308.281 | 357.01 | 2986/3000 | 14 | 25 | 0 |
+| Google | 22.790 | 258.736 | 441.450 | 210.33 | 2910/3000 | 90 | 0 | 20 |
+| Quad9 | 24.232 | 233.701 | 288.883 | 421.24 | 2981/3000 | 19 | 30 | 0 |
+| OpenDNS | 17.236 | 255.721 | 567.280 | 296.55 | 2992/3000 | 8 | 29 | 2 |
+| AdGuard unfiltered | 71.959 | 300.417 | 580.387 | 179.14 | 2965/3000 | 35 | 19 | 15 |
 
 ### AAAA
 
 | Provider | p50 ms | p95 ms | p99 ms | Response QPS | Replies | Timeouts | SERVFAIL | Rejected |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Cloudflare | 8.110 | 21.201 | 158.466 | 489.70 | 2998/3000 | 2 | 28 | 2 |
-| Google | 31.457 | 103.481 | 409.207 | 277.38 | 2970/3000 | 30 | 1 | 16 |
-| Quad9 | 19.956 | 64.258 | 389.808 | 668.36 | 2993/3000 | 7 | 30 | 0 |
-| OpenDNS | 15.983 | 76.218 | 329.253 | 314.81 | 2980/3000 | 20 | 14 | 0 |
-| AdGuard unfiltered | 69.796 | 309.068 | 1043.857 | 148.81 | 2939/3000 | 61 | 22 | 25 |
+| Cloudflare | 13.214 | 67.437 | 298.320 | 362.38 | 2982/3000 | 18 | 26 | 2 |
+| Google | 22.479 | 101.777 | 393.216 | 204.18 | 2925/3000 | 75 | 4 | 20 |
+| Quad9 | 24.510 | 75.104 | 286.261 | 422.80 | 2986/3000 | 14 | 30 | 0 |
+| OpenDNS | 20.005 | 129.827 | 302.252 | 316.47 | 2991/3000 | 9 | 26 | 2 |
+| AdGuard unfiltered | 73.925 | 301.728 | 520.880 | 160.31 | 2938/3000 | 62 | 32 | 12 |
 
 ## Observations
 
-Cloudflare had the lowest median A and AAAA response latency in this sample. OpenDNS was next by p50. Tail latency and timeouts varied substantially, so p50 alone does not describe the run.
+Cloudflare had the lowest median A and AAAA response latency in this sample. Tail latency, achieved throughput, and timeouts varied across providers and rounds, so p50 alone does not describe the run.
 
-The 2-second deadline matters. Separate dig spot checks observed a Google SERVFAIL for `www.gov.in` after 2.192 seconds and an AdGuard empty answer for `nic.in` after 2.157 seconds. Those checks occurred after the benchmark and are not included in its metrics. A timeout means no acceptable response arrived within the deadline; it does not establish packet loss.
+Separate sanity checks used three dig queries per provider and query type for `example.com`. Error-case checks reproduced Google's SERVFAIL for `www.gov.in` after 2.111 to 2.247 seconds in all three attempts. AdGuard's `nic.in` checks returned after about 2.15 seconds twice and timed out once with a 5-second wait. These checks were performed after the benchmark and are excluded from its tables.
+
+Additional alternating single-domain checks showed variable AdGuard latency in both dnsbench and dig. Some transient benchmark timeouts did not reproduce afterward. Counts were retained as observed. A timeout means no acceptable response arrived within the configured 2-second deadline; it does not establish packet loss.
 
 ## Reproduce
 
-Requires Rust, Python 3, and the `zstd` command-line tool. Run from the repository root:
+Requires Rust, Python 3, and the `zstd` command-line tool. The runner uses Tokio's automatic thread sizing. Run from the repository root:
 
 ```sh
 cargo build --release --locked

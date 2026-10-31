@@ -34,7 +34,7 @@ metadata = {
     'rustc': subprocess.check_output(['rustc', '--version'], text=True).strip(),
     'system': f'{platform.system()} {platform.release()} {platform.machine()}',
     'location': 'Unspecified', 'connection': 'Unspecified', 'execution': 'native release binary',
-    'workers': 4, 'threads': 2, 'max_in_flight': 32, 'timeout': '2s',
+    'workers': 4, 'threads': 'Tokio default', 'max_in_flight': 32, 'timeout': '2s',
     'measured_queries_per_run': 1000, 'rounds': 3,
     'warmup_queries_per_provider_and_type': 100,
     'seeds': [42, 43, 44], 'runs': [],
@@ -46,7 +46,7 @@ def run(provider, query_type, phase, round_number, count, seed):
     snapshot = snapshots / f'{label}.jsonl.zst'
     relative_command = ['./target/release/dns-bench', '--server', ip,
         '--domains', 'docs/benchmarks/domains.txt', '--type', query_type,
-        '--queries', str(count), '--workers', '4', '--threads', '2',
+        '--queries', str(count), '--workers', '4',
         '--max-in-flight', '32', '--timeout', '2s', '--shuffle', '--seed', str(seed),
         '--results-file', str(snapshot)]
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()

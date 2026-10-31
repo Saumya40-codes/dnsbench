@@ -23,7 +23,7 @@ fn setup(max_in_flight: usize, stop: StopCondition, timeout: Duration) -> (UdpSo
         domains_path: "domains.txt".into(),
         max_in_flight,
         workers: 1,
-        threads: 1,
+        threads: Some(1),
         stop_condition: stop,
         timeout,
         default_query_type: QueryType::A,
@@ -404,7 +404,11 @@ async fn captured_receive_time_excludes_later_processing_from_latency() {
         )
         .unwrap();
     assert_eq!(
-        engine.stats.domains[&0]
+        engine
+            .stats
+            .domains
+            .get(&0)
+            .unwrap()
             .slowest
             .as_ref()
             .unwrap()
@@ -436,7 +440,7 @@ fn concurrent_aaaa_queries_work_over_ipv6() {
         domains_path: "domains.txt".into(),
         max_in_flight: 2,
         workers: 1,
-        threads: 1,
+        threads: Some(1),
         stop_condition: StopCondition::QueryCount(NonZeroU64::new(2).unwrap()),
         timeout: Duration::from_secs(2),
         default_query_type: QueryType::Aaaa,

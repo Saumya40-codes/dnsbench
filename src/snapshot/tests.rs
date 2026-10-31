@@ -16,7 +16,7 @@ fn fixture() -> (RunConfig, Vec<DnsName>, RunReport) {
         domains_path: "domains.txt".into(),
         max_in_flight: 1,
         workers: 1,
-        threads: 1,
+        threads: Some(1),
         stop_condition: StopCondition::Once,
         timeout: Duration::from_secs(2),
         default_query_type: QueryType::A,
@@ -54,8 +54,7 @@ fn fixture() -> (RunConfig, Vec<DnsName>, RunReport) {
         };
         stats
             .domains
-            .entry(index)
-            .or_default()
+            .get_or_insert(index)
             .record(&report, Some(&packet));
         stats.record(report).unwrap();
     }
@@ -65,7 +64,7 @@ fn fixture() -> (RunConfig, Vec<DnsName>, RunReport) {
         elapsed: Duration::from_secs(2),
         rejected: RejectedPackets::default(),
     };
-    stats.domains.entry(2).or_default().record(&timeout, None);
+    stats.domains.get_or_insert(2).record(&timeout, None);
     stats.record(timeout).unwrap();
     (
         config,

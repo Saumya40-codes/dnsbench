@@ -45,7 +45,7 @@ fn extended_query_types_roundtrip_through_both_engines_and_saved_inspection() {
         ),
     ];
     for (kind, code, data, expected) in cases {
-        for (workers, threads, window) in [(1, 1, 1), (2, 2, 4)] {
+        for (workers, window) in [(1, 1), (2, 4)] {
             let file = DomainsFile::new("record-types");
             let domain = if kind == "PTR" {
                 "1.2.0.192.in-addr.arpa\n"
@@ -81,8 +81,6 @@ fn extended_query_types_roundtrip_through_both_engines_and_saved_inspection() {
                     kind,
                     "--workers",
                     &workers.to_string(),
-                    "--threads",
-                    &threads.to_string(),
                     "--max-in-flight",
                     &window.to_string(),
                 ])
@@ -136,7 +134,7 @@ fn topk_zero_is_silent_and_does_not_need_a_saved_run() {
 
 #[test]
 fn a_run_can_be_inspected_later_without_sending_queries() {
-    for (limit, workers, threads) in [(1, 1, 1), (4, 2, 2)] {
+    for (limit, workers) in [(1, 1), (4, 2)] {
         let file = DomainsFile::new("saved-inspection");
         fs::write(&file.0, "slow.example\nfast.example\ntimeout.example\n").unwrap();
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -209,8 +207,6 @@ fn a_run_can_be_inspected_later_without_sending_queries() {
                 &limit.to_string(),
                 "--workers",
                 &workers.to_string(),
-                "--threads",
-                &threads.to_string(),
                 "--timeout",
                 "200ms",
             ])
@@ -321,7 +317,13 @@ fn cli_executes_queries_and_separates_answer_and_error_populations() {
     assert!(text.contains("Loaded domains: 2"));
     assert!(text.contains("Max in flight: 2"));
     assert!(text.contains("Workers: 2"));
-    assert!(text.contains("Runtime threads: 1"));
+    let runtime_threads: usize = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Runtime threads: "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(runtime_threads > 0);
     assert!(text.contains("Seed: 42"));
     assert!(text.contains("Attempted: 3 | Sent: 3 | Responses: 3"));
     assert!(text.contains("NOERROR(0)=2 NXDOMAIN(3)=1"));
@@ -365,7 +367,7 @@ fn cli_rejects_max_in_flight_it_cannot_execute() {
 
 #[test]
 fn cli_defaults_to_one_pass_and_finishes_after_responses_or_timeouts() {
-    for (max_in_flight, workers, threads) in [(1, 1, 1), (8, 4, 2)] {
+    for (max_in_flight, workers) in [(1, 1), (8, 4)] {
         let file = DomainsFile::new("one-pass");
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket
@@ -391,8 +393,6 @@ fn cli_defaults_to_one_pass_and_finishes_after_responses_or_timeouts() {
                 &max_in_flight.to_string(),
                 "--workers",
                 &workers.to_string(),
-                "--threads",
-                &threads.to_string(),
                 "--timeout",
                 "100ms",
             ])
@@ -464,7 +464,13 @@ fn cli_executes_concurrent_queries_and_reports_peak_in_flight() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("Max in flight: 3"));
     assert!(text.contains("Workers: 3"));
-    assert!(text.contains("Runtime threads: 1"));
+    let runtime_threads: usize = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Runtime threads: "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(runtime_threads > 0);
     assert!(text.contains("Attempted: 3 | Sent: 3 | Responses: 3"));
     let peak: usize = text
         .lines()
