@@ -64,6 +64,14 @@ pub(crate) struct Header {
     pub(crate) latency_definition: String,
     pub(crate) finished_unix_secs: u64,
     pub(crate) server: SocketAddr,
+    #[serde(default = "default_transport")]
+    pub(crate) transport: String,
+    #[serde(default)]
+    pub(crate) tls_server_name: Option<String>,
+    #[serde(default)]
+    pub(crate) tls_connections: u64,
+    #[serde(default)]
+    pub(crate) tls_setup_ns: u128,
     pub(crate) query_type: String,
     pub(crate) mode: String,
     pub(crate) input_entries: usize,
@@ -185,6 +193,13 @@ pub(crate) fn save(
             .map_err(io::Error::other)?
             .as_secs(),
         server: config.server(),
+        transport: config.transport().as_str().into(),
+        tls_server_name: match config.transport() {
+            crate::config::Transport::Dot { server_name } => Some(server_name.clone()),
+            crate::config::Transport::Udp => None,
+        },
+        tls_connections: report.stats.tls_connections,
+        tls_setup_ns: report.stats.tls_setup.as_nanos(),
         query_type: config.default_query_type().to_string(),
         mode: match config.stop_condition() {
             StopCondition::Once => "once".into(),
@@ -462,8 +477,11 @@ impl fmt::Display for Inspection {
         }
         writeln!(
             f,
-            "Last run: {} · {} · {}",
-            self.header.server, self.header.query_type, self.header.stop_reason
+            "Last run: {} · {} · {} · {}",
+            self.header.server,
+            self.header.transport,
+            self.header.query_type,
+            self.header.stop_reason
         )?;
         let (label, count, description) = match self.selection {
             Selection::Top(_) => (
@@ -543,3 +561,7 @@ impl fmt::Display for Inspection {
 
 #[cfg(test)]
 mod tests;
+
+fn default_transport() -> String {
+    "UDP".into()
+}

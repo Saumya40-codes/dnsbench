@@ -78,9 +78,28 @@ pub enum QueryOrder {
     Shuffled { seed: u64 },
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Transport {
+    #[default]
+    Udp,
+    Dot {
+        server_name: String,
+    },
+}
+
+impl Transport {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Udp => "UDP",
+            Self::Dot { .. } => "DoT",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RunConfigInput {
     pub server: SocketAddr,
+    pub transport: Transport,
     pub domains_path: PathBuf,
     pub max_in_flight: usize,
     pub workers: usize,
@@ -94,6 +113,7 @@ pub struct RunConfigInput {
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     server: SocketAddr,
+    transport: Transport,
     domains_path: PathBuf,
     max_in_flight: NonZeroUsize,
     workers: NonZeroUsize,
@@ -111,6 +131,9 @@ pub enum ConfigError {
 
     #[error("server address must be a destination IP, not an unspecified address")]
     UnspecifiedServerAddress,
+
+    #[error("invalid TLS server name")]
+    InvalidTlsServerName,
 
     #[error("domains file path must not be empty")]
     EmptyDomainsPath,
@@ -146,6 +169,11 @@ impl TryFrom<RunConfigInput> for RunConfig {
             return Err(ConfigError::UnspecifiedServerAddress);
         }
 
+        if let Transport::Dot { server_name } = &value.transport {
+            tokio_rustls::rustls::pki_types::ServerName::try_from(server_name.as_str())
+                .map_err(|_| ConfigError::InvalidTlsServerName)?;
+        }
+
         if value.domains_path.as_os_str().is_empty() {
             return Err(ConfigError::EmptyDomainsPath);
         }
@@ -173,6 +201,7 @@ impl TryFrom<RunConfigInput> for RunConfig {
 
         Ok(Self {
             server: value.server,
+            transport: value.transport,
             domains_path: value.domains_path,
             max_in_flight,
             workers,
@@ -188,6 +217,10 @@ impl TryFrom<RunConfigInput> for RunConfig {
 impl RunConfig {
     pub fn server(&self) -> SocketAddr {
         self.server
+    }
+
+    pub fn transport(&self) -> &Transport {
+        &self.transport
     }
 
     pub fn domains_path(&self) -> &std::path::Path {
@@ -230,6 +263,7 @@ mod tests {
     fn valid_input() -> RunConfigInput {
         RunConfigInput {
             server: SocketAddr::from(([127, 0, 0, 1], 53)),
+            transport: crate::config::Transport::Udp,
             domains_path: PathBuf::from("domains.txt"),
             max_in_flight: 64,
             workers: 1,

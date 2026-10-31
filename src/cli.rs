@@ -8,7 +8,9 @@ use std::{
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use thiserror::Error;
 
-use crate::config::{ConfigError, QueryOrder, QueryType, RunConfig, RunConfigInput, StopCondition};
+use crate::config::{
+    ConfigError, QueryOrder, QueryType, RunConfig, RunConfigInput, StopCondition, Transport,
+};
 use crate::dns::name::DnsName;
 use crate::duration::parse_duration;
 
@@ -22,14 +24,22 @@ use crate::duration::parse_duration;
     .args(["duration", "queries"])
 ))]
 #[command(group(ArgGroup::new("run").multiple(true).args([
-    "server", "domains", "max_in_flight", "workers", "duration", "queries", "timeout", "query_type", "shuffle", "seed"
+    "server", "transport", "tls_server_name", "domains", "max_in_flight", "workers", "duration", "queries", "timeout", "query_type", "shuffle", "seed"
 ])))]
 pub struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
-    /// DNS server IP, optionally including a port; defaults to port 53
-    #[arg(long, required_unless_present = "topk", value_name = "ENDPOINT", value_parser = parse_server)]
-    server: Option<SocketAddr>,
+    /// DNS server IP, optionally including a port; defaults to 53 (UDP) or 853 (DoT)
+    #[arg(long, required_unless_present = "topk", value_name = "ENDPOINT", value_parser = |value: &str| parse_server(value).map(|_| value.to_owned()))]
+    server: Option<String>,
+
+    /// DNS transport
+    #[arg(long, value_enum, default_value = "udp")]
+    transport: TransportArg,
+
+    /// Certificate identity and SNI for DNS over TLS
+    #[arg(long, value_name = "HOSTNAME", requires = "transport")]
+    tls_server_name: Option<String>,
 
     /// Workload file containing domain names
     #[arg(long, required_unless_present = "topk", value_name = "FILE")]
@@ -76,6 +86,12 @@ pub struct Cli {
     seed: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum TransportArg {
+    Udp,
+    Dot,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Inspect a saved benchmark without sending DNS queries
@@ -113,6 +129,9 @@ pub enum CliConfigError {
     #[error("--shuffle and --seed must be supplied together")]
     InvalidShuffleOptions,
 
+    #[error("DoT requires --tls-server-name; UDP does not accept it")]
+    InvalidTlsOptions,
+
     #[error(transparent)]
     Config(#[from] ConfigError),
 }
@@ -135,8 +154,18 @@ impl Cli {
             _ => return Err(CliConfigError::InvalidShuffleOptions),
         };
 
+        let transport = match (self.transport, self.tls_server_name) {
+            (TransportArg::Udp, None) => Transport::Udp,
+            (TransportArg::Dot, Some(server_name)) => Transport::Dot { server_name },
+            _ => return Err(CliConfigError::InvalidTlsOptions),
+        };
+        let mut endpoint = parse_server(&server).expect("clap validates the server address");
+        if matches!(transport, Transport::Dot { .. }) && server.parse::<IpAddr>().is_ok() {
+            endpoint.set_port(853);
+        }
         let input = RunConfigInput {
-            server,
+            server: endpoint,
+            transport,
             domains_path: domains,
             max_in_flight: self.max_in_flight,
             workers: self.workers,
@@ -236,6 +265,58 @@ mod tests {
         assert!(Cli::try_parse_from(["dns-bench", "--topk", "3", "--server", "1.1.1.1"]).is_err());
         assert!(Cli::try_parse_from(["dns-bench", "--topk", "3", "--workers", "2"]).is_err());
         assert!(Cli::try_parse_from(["dns-bench"]).is_err());
+    }
+
+    #[test]
+    fn dot_requires_identity_and_preserves_explicit_ports() {
+        for (server, port) in [
+            ("1.1.1.1", 853),
+            ("1.1.1.1:53", 53),
+            ("[::1]:8853", 8853),
+            ("::1", 853),
+        ] {
+            let config = Cli::try_parse_from([
+                "dns-bench",
+                "--server",
+                server,
+                "--domains",
+                "domains.txt",
+                "--transport",
+                "dot",
+                "--tls-server-name",
+                "cloudflare-dns.com",
+            ])
+            .unwrap()
+            .into_config()
+            .unwrap();
+            assert_eq!(config.server().port(), port);
+            assert!(
+                matches!(config.transport(), Transport::Dot { server_name } if server_name == "cloudflare-dns.com")
+            );
+        }
+        assert!(
+            parse(&["--transport", "dot"])
+                .unwrap()
+                .into_config()
+                .is_err()
+        );
+        assert!(
+            parse(&["--transport", "udp", "--tls-server-name", "dot.test"])
+                .unwrap()
+                .into_config()
+                .is_err()
+        );
+        assert!(
+            parse(&[
+                "--transport",
+                "dot",
+                "--tls-server-name",
+                "https://dot.test"
+            ])
+            .unwrap()
+            .into_config()
+            .is_err()
+        );
     }
 
     #[test]
