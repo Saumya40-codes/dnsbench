@@ -18,6 +18,7 @@ fn setup(
         .unwrap();
     let config = RunConfig::try_from(RunConfigInput {
         server: socket.local_addr().unwrap(),
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight,
         workers,

@@ -16,6 +16,7 @@ use std::{
 fn config(server: SocketAddr, stop: StopCondition) -> RunConfig {
     RunConfig::try_from(RunConfigInput {
         server,
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight: 1,
         workers: 1,
@@ -95,6 +96,7 @@ fn duration_mode_drains_the_outstanding_query_then_stops() {
     );
     config = RunConfig::try_from(RunConfigInput {
         server: config.server(),
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight: 1,
         workers: 1,
@@ -124,6 +126,7 @@ fn an_unsent_timeout_stops_count_mode_instead_of_spinning() {
     let socket = server();
     let config = RunConfig::try_from(RunConfigInput {
         server: socket.local_addr().unwrap(),
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight: 1,
         workers: 1,
@@ -148,6 +151,7 @@ fn shuffle_is_seeded_preserves_entries_and_repeats_one_permutation() {
         let socket = server();
         let config = RunConfig::try_from(RunConfigInput {
             server: socket.local_addr().unwrap(),
+            transport: crate::config::Transport::Udp,
             domains_path: "domains.txt".into(),
             max_in_flight: 1,
             workers: 1,
@@ -274,6 +278,7 @@ fn empty_populations_are_displayed_as_unavailable_not_zero_latency() {
 fn rejects_unsupported_max_in_flight_empty_workloads_and_clock_overflow() {
     let mut input = RunConfigInput {
         server: "127.0.0.1:53".parse().unwrap(),
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight: 65_537,
         workers: 1,
@@ -290,6 +295,7 @@ fn rejects_unsupported_max_in_flight_empty_workloads_and_clock_overflow() {
     ));
     input = RunConfigInput {
         server: unsupported.server(),
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight: 1,
         workers: 1,

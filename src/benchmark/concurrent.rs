@@ -8,10 +8,11 @@ use std::{
 use tokio::{io::Interest, net::UdpSocket, sync::watch};
 
 use crate::{
-    config::{RunConfig, StopCondition},
+    config::{RunConfig, StopCondition, Transport},
     dns::{
         message::{ResponseError, encode_query, validate_response},
         name::DnsName,
+        transport::Socket,
         udp::{QueryOutcome, QueryReport, RejectedPackets},
     },
 };
@@ -31,7 +32,7 @@ pub(super) struct Engine {
     domains: Arc<[DnsName]>,
     shared: Arc<Shared>,
     max_in_flight: usize,
-    socket: UdpSocket,
+    socket: Socket,
     stop_updates: watch::Receiver<()>,
     pending: HashMap<u16, PendingQuery>,
     deadlines: VecDeque<u16>,
@@ -106,16 +107,25 @@ impl Engine {
         })
     }
 
-    pub(super) fn new(
+    pub(super) async fn new(
         config: Arc<RunConfig>,
         domains: Arc<[DnsName]>,
         shared: Arc<Shared>,
         max_in_flight: usize,
     ) -> Result<Self, BenchmarkError> {
-        let socket = UdpSocket::from_std(shared.connect(config.server())?)?;
+        let setup_started = Instant::now();
+        let socket = match config.transport() {
+            Transport::Udp => Socket::Udp(UdpSocket::from_std(shared.connect(config.server())?)?),
+            Transport::Dot { .. } => Socket::connect_tls(&config).await?,
+        };
+        let setup_elapsed = setup_started.elapsed();
         let stop_updates = shared.stop_updates.subscribe();
         let mut stats = RunStats::new()?;
         stats.domains.reserve_domains(domains.len());
+        if matches!(config.transport(), Transport::Dot { .. }) {
+            stats.tls_connections = 1;
+            stats.tls_setup = setup_elapsed;
+        }
         let pending = HashMap::with_capacity(max_in_flight);
         let deadlines = VecDeque::with_capacity(max_in_flight);
         let query_buffer = Vec::with_capacity(12 + 255 + 4);
@@ -164,12 +174,30 @@ impl Engine {
         let receive_limit_reached = self.receive_batch()?;
         let next_deadline = self.expire()?;
 
-        // IDs are never reused on a socket, even after their queries have completed.
+        // IDs are never reused on a connection, even after their queries have completed.
         if self.next_id > u32::from(u16::MAX)
             && self.pending.is_empty()
             && self.stop_reason.is_none()
         {
-            let replacement = UdpSocket::from_std(self.shared.connect(self.config.server())?)?;
+            if self.domain_index.is_none() {
+                let Some(sequence) = self.shared.claim()? else {
+                    self.stop_reason = Some(StopReason::QueryCount);
+                    return Ok(false);
+                };
+                self.domain_index = Some((sequence % self.domains.len() as u64) as usize);
+            }
+            let setup_started = Instant::now();
+            let replacement = match self.config.transport() {
+                Transport::Udp => Socket::Udp(UdpSocket::from_std(
+                    self.shared.connect(self.config.server())?,
+                )?),
+                Transport::Dot { .. } => {
+                    let socket = self.socket.reconnect_tls(&self.config).await?;
+                    self.stats.tls_connections += 1;
+                    self.stats.tls_setup += setup_started.elapsed();
+                    socket
+                }
+            };
             self.socket = replacement;
             self.next_id = 0;
             self.deadlines.clear();
@@ -338,6 +366,9 @@ impl Engine {
 
     fn receive_batch(&mut self) -> Result<bool, BenchmarkError> {
         for _ in 0..BATCH_SIZE {
+            if self.pending.is_empty() && matches!(self.config.transport(), Transport::Dot { .. }) {
+                return Ok(false);
+            }
             let length = match self.socket.try_recv(&mut self.receive_buffer) {
                 Ok(length) => length,
                 Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),

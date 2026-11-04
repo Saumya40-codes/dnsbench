@@ -101,6 +101,10 @@ fn main() -> ExitCode {
 
 fn print_config(config: &RunConfig) {
     println!("Server: {}", config.server());
+    println!("Transport: {}", config.transport().as_str());
+    if let crate::config::Transport::Dot { server_name } = config.transport() {
+        println!("TLS server name: {server_name}");
+    }
     println!("Domains: {}", config.domains_path().display());
     println!("Max in flight: {}", config.max_in_flight());
 

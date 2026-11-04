@@ -13,7 +13,7 @@ use std::{io, time::Instant};
 use thiserror::Error;
 
 use crate::{
-    config::{QueryOrder, RunConfig, StopCondition},
+    config::{QueryOrder, RunConfig, StopCondition, Transport},
     dns::{
         name::DnsName,
         udp::{QueryOutcome, UdpClient},
@@ -94,7 +94,9 @@ pub(crate) fn run(
         }
     }
 
-    if config.max_in_flight().get() > 1 || config.threads().is_some_and(|threads| threads.get() > 1)
+    if matches!(config.transport(), Transport::Dot { .. })
+        || config.max_in_flight().get() > 1
+        || config.threads().is_some_and(|threads| threads.get() > 1)
     {
         return workers::run(config, domains);
     }

@@ -13,6 +13,7 @@ use crate::{
 fn fixture() -> (RunConfig, Vec<DnsName>, RunReport) {
     let config = RunConfig::try_from(RunConfigInput {
         server: "127.0.0.1:53".parse().unwrap(),
+        transport: crate::config::Transport::Udp,
         domains_path: "domains.txt".into(),
         max_in_flight: 1,
         workers: 1,
@@ -206,6 +207,14 @@ fn version_one_remains_readable_without_inventing_missing_data() {
         let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
         if index == 0 {
             value["version"] = 1.into();
+            for field in [
+                "transport",
+                "tls_server_name",
+                "tls_connections",
+                "tls_setup_ns",
+            ] {
+                value.as_object_mut().unwrap().remove(field);
+            }
         } else {
             value.as_object_mut().unwrap().remove("first_index");
             value.as_object_mut().unwrap().remove("fastest");
@@ -214,7 +223,14 @@ fn version_one_remains_readable_without_inventing_missing_data() {
         legacy.push('\n');
     }
     std::fs::write(&path, zstd::encode_all(legacy.as_bytes(), 1).unwrap()).unwrap();
-    assert!(inspect(&path, &Selection::Top(2)).is_ok());
+    assert_eq!(
+        inspect(&path, &Selection::Top(2))
+            .unwrap()
+            .unwrap()
+            .header
+            .transport,
+        "UDP"
+    );
     assert!(inspect(&path, &Selection::Domain(DnsName::parse("a.com").unwrap())).is_ok());
     for selection in [Selection::Bottom(1), Selection::Limit(1)] {
         assert!(
@@ -387,4 +403,39 @@ fn streaming_selection_keeps_the_largest_samples_across_many_domains() {
             ["d0000.example", "d0001.example", "d0002.example"]
         );
     }
+}
+
+#[test]
+fn dot_metadata_survives_compressed_save_and_offline_inspection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dot.zst");
+    let (_, domains, mut report) = fixture();
+    let config = RunConfig::try_from(RunConfigInput {
+        server: "1.1.1.1:853".parse().unwrap(),
+        transport: crate::config::Transport::Dot {
+            server_name: "cloudflare-dns.com".into(),
+        },
+        domains_path: "domains.txt".into(),
+        max_in_flight: 1,
+        workers: 1,
+        threads: Some(1),
+        stop_condition: StopCondition::Once,
+        timeout: Duration::from_secs(2),
+        default_query_type: QueryType::A,
+        order: QueryOrder::Sequential,
+    })
+    .unwrap();
+    report.stats.tls_connections = 1;
+    report.stats.tls_setup = Duration::from_millis(25);
+    save(&path, &config, &domains, &domains, report).unwrap();
+    let inspection = inspect(&path, &Selection::Top(1)).unwrap().unwrap();
+    assert_eq!(inspection.header.transport, "DoT");
+    assert_eq!(
+        inspection.header.tls_server_name.as_deref(),
+        Some("cloudflare-dns.com")
+    );
+    assert_eq!(inspection.header.tls_connections, 1);
+    assert_eq!(inspection.header.tls_setup_ns, 25_000_000);
+    assert!(inspection.to_string().contains("DoT"));
+    assert!(inspection.to_string().contains("192.0.2.9"));
 }
